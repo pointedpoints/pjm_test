@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pjm-dayahead-foundation"
+version = "0.1.0"
+description = "Reproducible day-ahead electricity price forecasting foundation for PJM/COMED."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "OpenAI Codex" }]
+dependencies = [
+  "holidays>=0.71",
+  "matplotlib>=3.10.0",
+  "numpy>=2.2.0",
+  "optuna>=4.3.0",
+  "pandas>=2.2.3",
+  "pyarrow>=20.0.0",
+  "pyyaml>=6.0.2",
+  "scipy>=1.15.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.4"]
+ml = [
+  "epftoolbox>=1.0",
+  "neuralforecast>=1.7.5",
+  "torch>=2.6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pjm_forecast"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
