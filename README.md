@@ -25,6 +25,12 @@ python -m pip install -e .[dev,ml]
 python -m pip install -e .[dev]
 ```
 
+`epftoolbox` 不在 PyPI 上，因此不包含在默认 extras 里。需要运行 `LEAR/DNN` 基线时，单独从源码安装：
+
+```powershell
+python -m pip install git+https://github.com/jeslago/epftoolbox.git
+```
+
 ## Pipeline
 
 ```powershell
@@ -38,6 +44,5 @@ python scripts\export_report_assets.py --config configs\pjm_day_ahead_v1.yaml
 ## Notes
 
 - 第一版保持 `epftoolbox` 时间协议，不做 UTC 重映射。
-- `LEAR` 与 `DNN` 适配器需要安装 `epftoolbox`，且 `DNN` 需要其超参数优化产物。
+- `LEAR` 与 `DNN` 适配器需要额外安装 `epftoolbox`，且 `DNN` 需要其超参数优化产物。
 - 默认不保存每个周重训窗口的模型 checkpoint，只保存最佳超参数、seed 和预测结果。
-

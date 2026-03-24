@@ -24,7 +24,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.3.4"]
 ml = [
-  "epftoolbox>=1.0",
   "neuralforecast>=1.7.5",
   "torch>=2.6.0",
 ]

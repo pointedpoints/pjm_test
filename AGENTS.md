@@ -1,0 +1,46 @@
+# AGENTS.md
+
+## Mission and scope
+- This repo is a reproducible PJM/COMED day-ahead forecasting pipeline: data prep -> feature store -> rolling backtest -> evaluation/report export (`README.md`).
+- Keep changes aligned with the existing time protocol: **no UTC remapping** in v1 (`README.md`, `src/pjm_forecast/data/epftoolbox.py`).
+
+## Architecture map (what depends on what)
+- `scripts/*.py` are the workflow entrypoints; they orchestrate package modules and read one YAML config (`configs/pjm_day_ahead_v1.yaml`).
+- `src/pjm_forecast/config.py` + `src/pjm_forecast/paths.py` are the wiring layer. Always load config via `load_config(...)` and create dirs via `ensure_project_directories(...)`.
+- Data layer: `src/pjm_forecast/data/epftoolbox.py` downloads CSV and normalizes to panel columns `unique_id, ds, y, system_load_forecast, zonal_load_forecast`.
+- Feature layer: `src/pjm_forecast/features/engineering.py` adds calendar/cyclical features and lag features; preserves `ds` hourly ordering.
+- Backtest layer: `src/pjm_forecast/backtest/engine.py` applies rolling windows + weekly retrain policy and enforces exact horizon row count.
+- Model layer: `src/pjm_forecast/models/registry.py` maps config model types to adapters (`seasonal_naive`, `lear`, `dnn`, `nbeatsx`).
+- Evaluation layer: `src/pjm_forecast/evaluation/*` computes scalar metrics, DM tests, and plots; `scripts/export_report_assets.py` copies report artifacts.
+
+## Critical data and prediction contracts
+- Feature frames are expected to contain `ds`, `y`, future exogenous columns, and lag columns (see `tests/test_data_pipeline.py`).
+- `run_rolling_backtest(...)` expects model objects with `fit(train_df)` + `predict(history_df, future_df)`; prediction output must include `ds` and `y_pred` (`src/pjm_forecast/models/base.py`).
+- Backtest output contract includes `ds, y, y_pred, model, split, seed, quantile, metadata` (`tests/test_backtest_protocol.py`).
+- Split boundaries are serialized JSON timestamps (`train_end`, `validation_*`, `test_*`) and consumed by `get_daily_split_days(...)`.
+
+## Developer workflows (canonical commands)
+- Environment (Python 3.12):
+  - `python -m pip install -e .[dev]` for data/features/tests only.
+  - `python -m pip install -e .[dev,ml]` for NBEATSx/epftoolbox models (`pyproject.toml`).
+- End-to-end pipeline (run in order):
+  - `python scripts\prepare_data.py --config configs\pjm_day_ahead_v1.yaml`
+  - `python scripts\tune_nbeatsx.py --config configs\pjm_day_ahead_v1.yaml`
+  - `python scripts\backtest_all_models.py --config configs\pjm_day_ahead_v1.yaml --split test`
+  - `python scripts\evaluate_and_plot.py --config configs\pjm_day_ahead_v1.yaml --split test`
+  - `python scripts\export_report_assets.py --config configs\pjm_day_ahead_v1.yaml --split test`
+- Test baseline:
+  - `pytest`
+
+## Project-specific conventions to preserve
+- Paths in config are project-relative and resolved from config location (`ProjectConfig.resolve_path`).
+- `tune_nbeatsx.py` mutates `config.models["nbeatsx"]` inside the Optuna objective; avoid assuming immutable config objects.
+- `backtest_all_models.py` runs multi-seed only for `nbeatsx`; other models use `benchmark_seed`.
+- EPF wrappers rename columns to `Price`, `Exogenous 1`, `Exogenous 2`; this mapping is required for `epftoolbox` adapters.
+- Optional ML dependencies are lazily imported in model `__post_init__`; missing packages should raise clear `ImportError`, not fail silently.
+
+## Integration points and artifacts
+- External data source is configured in YAML (`dataset.source_url`) and downloaded only if missing.
+- Key artifacts are under `artifacts/`: `hyperparameters/`, `predictions/`, `metrics/`, `plots/`, `report/`.
+- `evaluate_and_plot.py` pairs runs for DM tests only when `ds` timestamps align exactly.
+
