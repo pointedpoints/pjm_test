@@ -41,7 +41,7 @@ features:
 
 backtest:
   horizon: 24
-  freq: "H"
+  freq: "h"
   years_test: 2
   validation_days: 182
   rolling_window_days: 728
@@ -97,4 +97,3 @@ report:
   primary_metric: "mae"
   auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
   include_high_volatility_week: true
-

@@ -37,18 +37,37 @@ class LEARModel(ForecastModel):
             raise ImportError("LEARModel requires epftoolbox to be installed.") from exc
         self._model = LEAR(calibration_window=self.calibration_window_days)
 
+    def _safe_recalibrate_predict(self, available_df: pd.DataFrame, next_day: pd.Timestamp) -> np.ndarray:
+        df_train = available_df.loc[: next_day - pd.Timedelta(hours=1)]
+        df_train = df_train.iloc[-self.calibration_window_days * 24 :]
+        df_test = available_df.loc[next_day - pd.Timedelta(weeks=2) :, :]
+        x_train, y_train, x_test = self._model._build_and_split_XYs(
+            df_train=df_train,
+            df_test=df_test,
+            date_test=next_day,
+        )
+
+        self._model.recalibrate(Xtrain=x_train, Ytrain=y_train)
+        y_pred = np.zeros(24, dtype=float)
+        x_no_dummies = self._model.scalerX.transform(x_test[:, :-7])
+        x_test = x_test.copy()
+        x_test[:, :-7] = x_no_dummies
+
+        for hour in range(24):
+            prediction = self._model.models[hour].predict(x_test)
+            y_pred[hour] = float(np.asarray(prediction).reshape(-1)[0])
+
+        y_pred = self._model.scalerY.inverse_transform(y_pred.reshape(1, -1))
+        return np.asarray(y_pred).reshape(-1)
+
     def fit(self, train_df: pd.DataFrame) -> None:
         self._latest_train = train_df.copy()
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
         available_df = _to_epftoolbox_frame(history_df, future_df)
         next_day = future_df["ds"].min()
-        prediction = self._model.recalibrate_and_forecast_next_day(
-            df=available_df,
-            calibration_window=self.calibration_window_days,
-            next_day_date=next_day,
-        )
-        return pd.DataFrame({"ds": future_df["ds"].to_numpy(), "y_pred": np.asarray(prediction).reshape(-1)})
+        prediction = self._safe_recalibrate_predict(available_df=available_df, next_day=next_day)
+        return pd.DataFrame({"ds": future_df["ds"].to_numpy(), "y_pred": prediction})
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps({"calibration_window_days": self.calibration_window_days}), encoding="utf-8")
@@ -113,4 +132,3 @@ class DNNModel(ForecastModel):
     def load(cls, path: Path) -> "DNNModel":
         payload = json.loads(path.read_text(encoding="utf-8"))
         return cls(**payload)
-

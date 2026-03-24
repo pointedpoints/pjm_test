@@ -14,6 +14,13 @@ from pjm_forecast.models import build_model
 from pjm_forecast.paths import ensure_project_directories
 
 
+MLP_UNIT_SEARCH_SPACE = {
+    "256x256": [[256, 256], [256, 256]],
+    "512x512": [[512, 512], [512, 512]],
+    "512x256": [[512, 256], [256, 256]],
+}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -51,10 +58,8 @@ def main() -> None:
             tuning_cfg["search_space"]["dropout"][0],
             tuning_cfg["search_space"]["dropout"][1],
         )
-        config.models["nbeatsx"]["mlp_units"] = trial.suggest_categorical(
-            "mlp_units",
-            tuning_cfg["search_space"]["mlp_units"],
-        )
+        mlp_units_key = trial.suggest_categorical("mlp_units", list(MLP_UNIT_SEARCH_SPACE))
+        config.models["nbeatsx"]["mlp_units"] = MLP_UNIT_SEARCH_SPACE[mlp_units_key]
 
         predictions = run_rolling_backtest(
             config=config,
@@ -77,4 +82,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

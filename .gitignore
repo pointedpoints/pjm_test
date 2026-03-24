@@ -1,6 +1,13 @@
 .venv/
+.uv-cache/
+.idea/
 __pycache__/
 .pytest_cache/
+.pytest_tmp/
+tmp_pytest/
+tmp_local/
+pytest_cache_local/
+.tmp/
 *.pyc
 *.pyo
 *.pyd
@@ -9,4 +16,3 @@ data/processed/
 artifacts/**
 !artifacts/.gitkeep
 !data/.gitkeep
-

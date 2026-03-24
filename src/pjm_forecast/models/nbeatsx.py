@@ -13,6 +13,7 @@ from .base import ForecastModel
 @dataclass
 class NBEATSxModel(ForecastModel):
     h: int
+    freq: str
     input_size: int
     max_steps: int
     learning_rate: float
@@ -48,20 +49,30 @@ class NBEATSxModel(ForecastModel):
             mlp_units=self.mlp_units,
             futr_exog_list=self.futr_exog_list,
             random_seed=self.random_seed,
+            logger=False,
+            enable_progress_bar=False,
         )
-        self._nf = self._neuralforecast_cls(models=[model], freq="H")
+        self._nf = self._neuralforecast_cls(models=[model], freq=self.freq)
         self._nf.fit(df=train_df)
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
         if self._nf is None:
             raise RuntimeError("NBEATSxModel must be fit before predict.")
-        prediction_df = self._nf.predict(futr_df=future_df)
+
+        expected_future = self._nf.make_future_dataframe(df=history_df)
+        future_inputs = future_df.loc[:, ["unique_id", "ds", *self.futr_exog_list]].copy()
+        futr_df = expected_future.merge(future_inputs, on=["unique_id", "ds"], how="left")
+        if futr_df[self.futr_exog_list].isna().any().any():
+            raise ValueError("Missing future exogenous values after aligning to NeuralForecast future grid.")
+
+        prediction_df = self._nf.predict(df=history_df, futr_df=futr_df)
         model_column = [column for column in prediction_df.columns if column not in {"unique_id", "ds"}][0]
         return prediction_df.rename(columns={model_column: "y_pred"}).loc[:, ["ds", "y_pred"]]
 
     def save(self, path: Path) -> None:
         payload = {
             "h": self.h,
+            "freq": self.freq,
             "input_size": self.input_size,
             "max_steps": self.max_steps,
             "learning_rate": self.learning_rate,
@@ -79,4 +90,3 @@ class NBEATSxModel(ForecastModel):
     def load(cls, path: Path) -> "NBEATSxModel":
         payload = json.loads(path.read_text(encoding="utf-8"))
         return cls(**payload)
-

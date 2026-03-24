@@ -37,7 +37,7 @@ def build_model(
     if model_type == "nbeatsx":
         if seed is not None:
             model_cfg["random_seed"] = seed
+        model_cfg["freq"] = config.backtest["freq"]
         model_cfg["futr_exog_list"] = config.features["future_exog"]
         return NBEATSxModel(**model_cfg)
     raise ValueError(f"Unsupported model type: {model_type}")
-
