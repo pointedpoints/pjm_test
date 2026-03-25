@@ -90,9 +90,9 @@ models:
     scaler_type: "identity"
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
-      - [768, 512]
-      - [768, 512]
-      - [768, 512]
+      - [768, 768]
+      - [768, 768]
+      - [768, 768]
 
 report:
   primary_metric: "mae"

@@ -15,10 +15,9 @@ from pjm_forecast.paths import ensure_project_directories
 
 
 MLP_UNIT_SEARCH_SPACE = {
-    "256x128": [[256, 128], [256, 128]],
-    "512x512": [[512, 512], [512, 512]],
-    "768x512": [[768, 512], [768, 512]],
-    "1024x512": [[1024, 512], [1024, 512]],
+    "256x256": [[256, 256], [256, 256], [256, 256]],
+    "512x512": [[512, 512], [512, 512], [512, 512]],
+    "768x768": [[768, 768], [768, 768], [768, 768]],
 }
 
 
@@ -74,7 +73,7 @@ def main() -> None:
         return compute_metrics(predictions)["mae"]
 
     study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=tuning_cfg["n_trials"])
+    study.optimize(objective, n_trials=tuning_cfg["n_trials"], catch=(RuntimeError, ValueError))
 
     output_path = directories["hyperparameter_dir"] / "nbeatsx_best_params.json"
     output_path.write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
