@@ -57,3 +57,35 @@ def test_backtest_generates_prediction_contract() -> None:
     assert len(result) == 48
     assert set(["ds", "y", "y_pred", "model", "split", "seed", "quantile", "metadata"]).issubset(result.columns)
 
+
+def test_backtest_resumes_from_existing_chunks(tmp_path: Path) -> None:
+    config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
+    config.raw["backtest"]["rolling_window_days"] = 8
+    feature_df = _feature_frame()
+    forecast_days = [pd.Timestamp("2017-01-09 00:00:00"), pd.Timestamp("2017-01-10 00:00:00")]
+    output_path = tmp_path / "seasonal_naive_validation_seed7.parquet"
+
+    first = run_rolling_backtest(
+        config=config,
+        feature_df=feature_df,
+        split_name="validation",
+        forecast_days=[forecast_days[0]],
+        model_builder=lambda: SeasonalNaiveModel(seasonal_lag_hours=24),
+        model_name="seasonal_naive",
+        seed=7,
+        output_path=output_path,
+    )
+    assert len(first) == 24
+
+    resumed = run_rolling_backtest(
+        config=config,
+        feature_df=feature_df,
+        split_name="validation",
+        forecast_days=forecast_days,
+        model_builder=lambda: SeasonalNaiveModel(seasonal_lag_hours=24),
+        model_name="seasonal_naive",
+        seed=7,
+        output_path=output_path,
+    )
+    assert len(resumed) == 48
+    assert output_path.exists()

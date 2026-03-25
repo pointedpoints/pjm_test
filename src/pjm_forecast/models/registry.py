@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from pjm_forecast.config import ProjectConfig
+from pjm_forecast.features import nbeatsx_futr_exog_columns
 
 from .epftoolbox_wrappers import DNNModel, LEARModel
 from .nbeatsx import NBEATSxModel
@@ -38,6 +39,6 @@ def build_model(
         if seed is not None:
             model_cfg["random_seed"] = seed
         model_cfg["freq"] = config.backtest["freq"]
-        model_cfg["futr_exog_list"] = config.features["future_exog"]
+        model_cfg["futr_exog_list"] = nbeatsx_futr_exog_columns(config)
         return NBEATSxModel(**model_cfg)
     raise ValueError(f"Unsupported model type: {model_type}")

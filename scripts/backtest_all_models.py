@@ -13,11 +13,20 @@ from pjm_forecast.models import build_model
 from pjm_forecast.paths import ensure_project_directories
 
 
+MLP_UNIT_SEARCH_SPACE = {
+    "256x256": [[256, 256], [256, 256]],
+    "512x512": [[512, 512], [512, 512]],
+    "512x256": [[512, 256], [256, 256]],
+}
+
+
 def _load_best_params(config, hyperparameter_dir: Path) -> None:
     best_params_path = hyperparameter_dir / "nbeatsx_best_params.json"
     if not best_params_path.exists():
         return
     best_params = json.loads(best_params_path.read_text(encoding="utf-8"))
+    if isinstance(best_params.get("mlp_units"), str):
+        best_params["mlp_units"] = MLP_UNIT_SEARCH_SPACE[best_params["mlp_units"]]
     config.models["nbeatsx"].update(best_params)
 
 
@@ -39,6 +48,9 @@ def main() -> None:
         seeds = config.project["random_seeds"] if model_name == "nbeatsx" else [config.project["benchmark_seed"]]
         for seed in seeds:
             output_path = directories["prediction_dir"] / f"{model_name}_{args.split}_seed{seed}.parquet"
+            if output_path.exists():
+                print(f"Skipping existing predictions at {output_path}")
+                continue
             predictions = run_rolling_backtest(
                 config=config,
                 feature_df=feature_df,
@@ -59,4 +71,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -33,6 +33,12 @@ uv pip install git+https://github.com/jeslago/epftoolbox.git
 ## Pipeline
 
 ```powershell
+uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_v1.yaml --split test
+```
+
+也可以按阶段单独执行：
+
+```powershell
 uv run python scripts\prepare_data.py --config configs\pjm_day_ahead_v1.yaml
 uv run python scripts\tune_nbeatsx.py --config configs\pjm_day_ahead_v1.yaml
 uv run python scripts\backtest_all_models.py --config configs\pjm_day_ahead_v1.yaml

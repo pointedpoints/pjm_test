@@ -42,6 +42,9 @@ def build_feature_frame(config: ProjectConfig, panel_df: pd.DataFrame) -> pd.Dat
 
     for lag in feature_cfg["price_lags"]:
         feature_df[f"price_lag_{lag}"] = feature_df["y"].shift(lag)
+    for lag in feature_cfg["load_lags"]:
+        feature_df[f"system_load_forecast_lag_{lag}"] = feature_df["system_load_forecast"].shift(lag)
+        feature_df[f"zonal_load_forecast_lag_{lag}"] = feature_df["zonal_load_forecast"].shift(lag)
 
     ordered_columns = [
         "unique_id",
@@ -53,11 +56,31 @@ def build_feature_frame(config: ProjectConfig, panel_df: pd.DataFrame) -> pd.Dat
         "is_holiday",
         *cyclical_columns,
         *(f"price_lag_{lag}" for lag in feature_cfg["price_lags"]),
+        *(f"system_load_forecast_lag_{lag}" for lag in feature_cfg["load_lags"]),
+        *(f"zonal_load_forecast_lag_{lag}" for lag in feature_cfg["load_lags"]),
     ]
     return feature_df.loc[:, ordered_columns].copy()
+
+
+def nbeatsx_futr_exog_columns(config: ProjectConfig) -> list[str]:
+    feature_cfg = config.features
+    cyclical_columns = []
+    for column_name in feature_cfg["cyclical"]:
+        cyclical_columns.extend([f"{column_name}_sin", f"{column_name}_cos"])
+
+    lag_columns = [f"price_lag_{lag}" for lag in feature_cfg["price_lags"]]
+    load_lag_columns = []
+    for lag in feature_cfg["load_lags"]:
+        load_lag_columns.extend(
+            [
+                f"system_load_forecast_lag_{lag}",
+                f"zonal_load_forecast_lag_{lag}",
+            ]
+        )
+    calendar_columns = ["is_weekend", "is_holiday", *cyclical_columns]
+    return [*feature_cfg["future_exog"], *calendar_columns, *lag_columns, *load_lag_columns]
 
 
 def save_feature_frame(feature_df: pd.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     feature_df.to_parquet(output_path, index=False)
-

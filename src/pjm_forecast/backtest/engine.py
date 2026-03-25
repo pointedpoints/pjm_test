@@ -29,6 +29,34 @@ def _retrain_due(forecast_day: pd.Timestamp, retrain_weekday: int, existing_mode
     return existing_model is None or forecast_day.weekday() == retrain_weekday
 
 
+def _chunk_path(output_path: Path, forecast_day: pd.Timestamp) -> Path:
+    chunk_dir = output_path.parent / "chunks" / output_path.stem
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    return chunk_dir / f"{forecast_day.strftime('%Y-%m-%d')}.parquet"
+
+
+def _write_chunk(chunk_path: Path, chunk_df: pd.DataFrame) -> None:
+    chunk_df.to_parquet(chunk_path, index=False)
+
+
+def _load_existing_chunk(chunk_path: Path) -> pd.DataFrame:
+    return pd.read_parquet(chunk_path)
+
+
+def _finalize_output(output_path: Path, forecast_days: list[pd.Timestamp]) -> pd.DataFrame:
+    chunk_frames = []
+    for forecast_day in forecast_days:
+        chunk_path = _chunk_path(output_path, forecast_day)
+        if not chunk_path.exists():
+            raise FileNotFoundError(f"Missing chunk file for forecast day {forecast_day}: {chunk_path}")
+        chunk_frames.append(pd.read_parquet(chunk_path))
+
+    result = pd.concat(chunk_frames, axis=0, ignore_index=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_parquet(output_path, index=False)
+    return result
+
+
 def run_rolling_backtest(
     config: ProjectConfig,
     feature_df: pd.DataFrame,
@@ -44,8 +72,19 @@ def run_rolling_backtest(
     retrain_weekday = config.backtest["retrain_weekday"]
     model = None
     predictions = []
+    completed_days: set[pd.Timestamp] = set()
+
+    if output_path is not None:
+        for forecast_day in forecast_days:
+            chunk_path = _chunk_path(output_path, forecast_day)
+            if chunk_path.exists():
+                predictions.append(_load_existing_chunk(chunk_path))
+                completed_days.add(forecast_day.normalize())
 
     for forecast_day in forecast_days:
+        if forecast_day.normalize() in completed_days:
+            continue
+
         history_df = _window_slice(feature_df, forecast_day=forecast_day, window_days=window_days)
         future_df = _future_slice(feature_df, forecast_day=forecast_day, horizon=horizon)
 
@@ -65,9 +104,10 @@ def run_rolling_backtest(
         merged["metadata"] = json.dumps({"forecast_day": forecast_day.isoformat()})
         predictions.append(merged)
 
+        if output_path is not None:
+            _write_chunk(_chunk_path(output_path, forecast_day), merged)
+
     result = pd.concat(predictions, axis=0, ignore_index=True)
     if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        result.to_parquet(output_path, index=False)
+        result = _finalize_output(output_path, forecast_days)
     return result
-

@@ -1,6 +1,6 @@
 project:
   name: "pjm_dayahead_foundation_v1"
-  random_seeds: [7, 19, 43]
+  random_seeds: [7]
   benchmark_seed: 7
   directories:
     raw_data_dir: "data/raw"
@@ -29,6 +29,7 @@ features:
     - "system_load_forecast"
     - "zonal_load_forecast"
   price_lags: [24, 48, 72, 168]
+  load_lags: [24, 48, 72, 168]
   cyclical:
     hour: 24
     day_of_week: 7
@@ -48,7 +49,7 @@ backtest:
   retrain_weekday: 0
   retrain_weekday_name: "MON"
   seasonal_naive_lag_hours: 168
-  benchmark_models: ["seasonal_naive", "lear", "dnn", "nbeatsx"]
+  benchmark_models: ["seasonal_naive", "lear", "nbeatsx"]
 
 tuning:
   model_name: "nbeatsx"
