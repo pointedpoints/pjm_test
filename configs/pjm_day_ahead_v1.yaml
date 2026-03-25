@@ -28,8 +28,8 @@ features:
   future_exog:
     - "system_load_forecast"
     - "zonal_load_forecast"
-  price_lags: [24, 48, 72, 168]
-  load_lags: [24, 48, 72, 168]
+  price_lags: [24, 168]
+  load_lags: [24, 168]
   cyclical:
     hour: 24
     day_of_week: 7
@@ -56,15 +56,15 @@ tuning:
   n_trials: 20
   metric: "mae"
   search_space:
-    input_size: [168, 336, 504]
-    learning_rate: [0.0001, 0.01]
+    input_size: [168, 336, 504, 672]
+    learning_rate: [0.0001, 0.005]
     batch_size: [16, 32, 64]
-    max_steps: [200, 800]
-    dropout: [0.0, 0.3]
+    max_steps: [400, 1600]
+    dropout: [0.0, 0.2]
     mlp_units:
-      - [256, 256]
+      - [256, 128]
       - [512, 512]
-      - [512, 256]
+      - [768, 512]
 
 models:
   seasonal_naive:
@@ -82,17 +82,17 @@ models:
   nbeatsx:
     type: "nbeatsx"
     h: 24
-    input_size: 168
-    max_steps: 400
-    learning_rate: 0.001
-    batch_size: 32
-    dropout_prob_theta: 0.0
+    input_size: 336
+    max_steps: 600
+    learning_rate: 0.0005
+    batch_size: 16
+    dropout_prob_theta: 0.05
     scaler_type: "identity"
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
-      - [512, 512]
-      - [512, 512]
-      - [512, 512]
+      - [768, 512]
+      - [768, 512]
+      - [768, 512]
 
 report:
   primary_metric: "mae"
