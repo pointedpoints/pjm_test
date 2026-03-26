@@ -57,6 +57,7 @@ tuning:
   model_name: "nbeatsx"
   n_trials: 4
   metric: "mae"
+  use_ensemble_in_tuning: true
   optuna_storage: "sqlite:////kaggle/working/pjm_remaster_run/artifacts/hyperparameters/optuna_nbeatsx.db"
   optuna_study_name: "nbeatsx_tuning"
   search_space:

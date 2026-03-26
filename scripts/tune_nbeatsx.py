@@ -28,6 +28,7 @@ def run_tune_nbeatsx(config_path: str) -> None:
     split_boundaries = load_split_boundaries(directories["processed_data_dir"] / "split_boundaries.json")
     validation_days = get_daily_split_days(feature_df, split_boundaries, split_name="validation")
     tuning_cfg = config.tuning
+    use_ensemble_in_tuning = bool(tuning_cfg.get("use_ensemble_in_tuning", False))
 
     def objective(trial: optuna.Trial) -> float:
         config.models["nbeatsx"]["input_size"] = trial.suggest_categorical(
@@ -66,7 +67,7 @@ def run_tune_nbeatsx(config_path: str) -> None:
                 config,
                 "nbeatsx",
                 seed=config.project["benchmark_seed"],
-                disable_ensemble=True,
+                disable_ensemble=not use_ensemble_in_tuning,
             ),
             model_name="nbeatsx",
             seed=config.project["benchmark_seed"],

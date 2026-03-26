@@ -39,6 +39,7 @@ def build_kaggle_config(
 
     if fast_mode:
         payload["tuning"]["n_trials"] = min(int(payload["tuning"]["n_trials"]), 4)
+        payload["tuning"]["use_ensemble_in_tuning"] = False
         payload["backtest"]["benchmark_models"] = ["nbeatsx"]
         payload["project"]["random_seeds"] = [payload["project"]["benchmark_seed"]]
 

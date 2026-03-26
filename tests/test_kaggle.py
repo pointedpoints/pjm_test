@@ -47,4 +47,5 @@ def test_build_kaggle_config_patches_fast_mode(tmp_path: Path) -> None:
     assert payload["project"]["root_override"] == str((tmp_path / "run"))
     assert payload["dataset"]["local_csv_path"] == str(tmp_path / "PJM.csv")
     assert payload["tuning"]["n_trials"] <= 4
+    assert payload["tuning"]["use_ensemble_in_tuning"] is False
     assert payload["backtest"]["benchmark_models"] == ["nbeatsx"]
