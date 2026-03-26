@@ -6,7 +6,7 @@ import pandas as pd
 
 from pjm_forecast.config import load_config
 from pjm_forecast.data.epftoolbox import build_split_boundaries, load_panel_dataset
-from pjm_forecast.features.engineering import build_feature_frame, nbeatsx_futr_exog_columns
+from pjm_forecast.features.engineering import build_feature_frame, nbeatsx_futr_exog_columns, nbeatsx_hist_exog_columns
 
 
 def _write_csv(tmp_path: Path, hours: int = 24 * 1200) -> Path:
@@ -55,15 +55,19 @@ def test_build_split_boundaries_returns_ordered_ranges(tmp_path: Path) -> None:
     assert split_boundaries["test_start"] > split_boundaries["validation_end"]
 
 
-def test_nbeatsx_futr_exog_columns_include_calendar_and_lags() -> None:
+def test_nbeatsx_exog_column_groups_split_future_and_history() -> None:
     config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
-    columns = nbeatsx_futr_exog_columns(config)
-    assert "system_load_forecast" in columns
-    assert "zonal_load_forecast" in columns
-    assert "is_weekend" in columns
-    assert "is_holiday" in columns
-    assert "hour_sin" in columns
-    assert "day_of_year_cos" in columns
-    assert "price_lag_168" in columns
-    assert "system_load_forecast_lag_168" in columns
-    assert "zonal_load_forecast_lag_168" in columns
+    futr_columns = nbeatsx_futr_exog_columns(config)
+    hist_columns = nbeatsx_hist_exog_columns(config)
+    assert "system_load_forecast" in futr_columns
+    assert "zonal_load_forecast" in futr_columns
+    assert "is_weekend" in futr_columns
+    assert "is_holiday" in futr_columns
+    assert "hour_sin" in futr_columns
+    assert "day_of_year_cos" in futr_columns
+    assert "price_lag_168" not in futr_columns
+    assert "system_load_forecast_lag_168" not in futr_columns
+    assert "zonal_load_forecast_lag_168" not in futr_columns
+    assert "price_lag_168" in hist_columns
+    assert "system_load_forecast_lag_168" in hist_columns
+    assert "zonal_load_forecast_lag_168" in hist_columns

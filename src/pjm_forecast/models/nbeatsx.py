@@ -82,8 +82,13 @@ class NBEATSxModel(ForecastModel):
     stack_types: list[str]
     mlp_units: list[list[int]]
     futr_exog_list: list[str]
+    hist_exog_list: list[str]
     target_transform: str = "identity"
     exog_scaler: str = "identity"
+    early_stop_patience_steps: int = -1
+    val_check_steps: int = 100
+    validation_size: int = 168
+    windows_batch_size: int = 1024
     random_seed: int = 7
     name: str = "nbeatsx"
     _nf: Any = field(default=None, init=False, repr=False)
@@ -120,7 +125,7 @@ class NBEATSxModel(ForecastModel):
         }
         return [
             column
-            for column in self.futr_exog_list
+            for column in [*self.futr_exog_list, *self.hist_exog_list]
             if column in frame.columns and column not in protected_columns and not column.startswith("price_lag_")
         ]
 
@@ -157,12 +162,19 @@ class NBEATSxModel(ForecastModel):
             stack_types=self.stack_types,
             mlp_units=self.mlp_units,
             futr_exog_list=self.futr_exog_list,
+            hist_exog_list=self.hist_exog_list,
+            early_stop_patience_steps=self.early_stop_patience_steps,
+            val_check_steps=self.val_check_steps,
+            windows_batch_size=self.windows_batch_size,
             random_seed=self.random_seed,
             logger=False,
             enable_progress_bar=False,
         )
         self._nf = self._neuralforecast_cls(models=[model], freq=self.freq)
-        self._nf.fit(df=train_df)
+        fit_kwargs = {"df": train_df}
+        if self.early_stop_patience_steps > 0:
+            fit_kwargs["val_size"] = self.validation_size
+        self._nf.fit(**fit_kwargs)
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
         if self._nf is None:
@@ -197,8 +209,13 @@ class NBEATSxModel(ForecastModel):
             "stack_types": self.stack_types,
             "mlp_units": self.mlp_units,
             "futr_exog_list": self.futr_exog_list,
+            "hist_exog_list": self.hist_exog_list,
             "target_transform": self.target_transform,
             "exog_scaler": self.exog_scaler,
+            "early_stop_patience_steps": self.early_stop_patience_steps,
+            "val_check_steps": self.val_check_steps,
+            "validation_size": self.validation_size,
+            "windows_batch_size": self.windows_batch_size,
             "random_seed": self.random_seed,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

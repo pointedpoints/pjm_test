@@ -68,6 +68,12 @@ def nbeatsx_futr_exog_columns(config: ProjectConfig) -> list[str]:
     for column_name in feature_cfg["cyclical"]:
         cyclical_columns.extend([f"{column_name}_sin", f"{column_name}_cos"])
 
+    calendar_columns = ["is_weekend", "is_holiday", *cyclical_columns]
+    return [*feature_cfg["future_exog"], *calendar_columns]
+
+
+def nbeatsx_hist_exog_columns(config: ProjectConfig) -> list[str]:
+    feature_cfg = config.features
     lag_columns = [f"price_lag_{lag}" for lag in feature_cfg["price_lags"]]
     load_lag_columns = []
     for lag in feature_cfg["load_lags"]:
@@ -77,8 +83,7 @@ def nbeatsx_futr_exog_columns(config: ProjectConfig) -> list[str]:
                 f"zonal_load_forecast_lag_{lag}",
             ]
         )
-    calendar_columns = ["is_weekend", "is_holiday", *cyclical_columns]
-    return [*feature_cfg["future_exog"], *calendar_columns, *lag_columns, *load_lag_columns]
+    return [*lag_columns, *load_lag_columns]
 
 
 def save_feature_frame(feature_df: pd.DataFrame, output_path: Path) -> None:

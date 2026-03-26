@@ -92,6 +92,10 @@ models:
     scaler_type: "identity"
     target_transform: "asinh_q95"
     exog_scaler: "zscore"
+    early_stop_patience_steps: 10
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]
