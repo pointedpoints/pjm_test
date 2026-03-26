@@ -49,7 +49,7 @@ backtest:
   retrain_weekday: 0
   retrain_weekday_name: "MON"
   seasonal_naive_lag_hours: 168
-  benchmark_models: ["seasonal_naive", "lear", "nbeatsx"]
+  benchmark_models: ["seasonal_naive", "lear", "dnn", "nbeatsx"]
 
 tuning:
   model_name: "nbeatsx"
@@ -62,9 +62,9 @@ tuning:
     max_steps: [400, 1600]
     dropout: [0.0, 0.2]
     mlp_units:
-      - [256, 128]
+      - [256, 256]
       - [512, 512]
-      - [768, 512]
+      - [768, 768]
 
 models:
   seasonal_naive:
@@ -79,6 +79,8 @@ models:
     shuffle_train: true
     data_augmentation: false
     calibration_window_years: 2
+    auto_generate_hyperparameters: true
+    hyperopt_max_evals: 5
   nbeatsx:
     type: "nbeatsx"
     h: 24
@@ -88,6 +90,8 @@ models:
     batch_size: 16
     dropout_prob_theta: 0.05
     scaler_type: "identity"
+    target_transform: "asinh_q95"
+    exog_scaler: "zscore"
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]

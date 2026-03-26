@@ -28,12 +28,15 @@ def build_model(
         return DNNModel(
             experiment_id=model_cfg["experiment_id"],
             hyperparameter_dir=str(hyperparameter_dir or config.resolve_path(config.project["directories"]["hyperparameter_dir"])),
+            dataset_dir=str(config.resolve_path(config.project["directories"]["raw_data_dir"])),
             nlayers=model_cfg["nlayers"],
             dataset=config.dataset["dataset_name"],
             years_test=config.backtest["years_test"],
             shuffle_train=model_cfg["shuffle_train"],
             data_augmentation=model_cfg["data_augmentation"],
             calibration_window_years=model_cfg["calibration_window_years"],
+            auto_generate_hyperparameters=model_cfg["auto_generate_hyperparameters"],
+            hyperopt_max_evals=model_cfg["hyperopt_max_evals"],
         )
     if model_type == "nbeatsx":
         if seed is not None:

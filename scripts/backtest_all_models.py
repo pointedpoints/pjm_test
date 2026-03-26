@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -13,11 +14,17 @@ from pjm_forecast.models import build_model
 from pjm_forecast.paths import ensure_project_directories
 
 
-MLP_UNIT_SEARCH_SPACE = {
-    "256x256": [[256, 256], [256, 256]],
-    "512x512": [[512, 512], [512, 512]],
-    "512x256": [[512, 256], [256, 256]],
-}
+def _decode_mlp_units(value):
+    if not isinstance(value, str):
+        return value
+
+    match = re.fullmatch(r"(\d+)x(\d+)", value)
+    if not match:
+        raise ValueError(f"Unsupported mlp_units encoding: {value}")
+
+    width_in = int(match.group(1))
+    width_out = int(match.group(2))
+    return [[width_in, width_out], [width_in, width_out], [width_in, width_out]]
 
 
 def _load_best_params(config, hyperparameter_dir: Path) -> None:
@@ -25,8 +32,7 @@ def _load_best_params(config, hyperparameter_dir: Path) -> None:
     if not best_params_path.exists():
         return
     best_params = json.loads(best_params_path.read_text(encoding="utf-8"))
-    if isinstance(best_params.get("mlp_units"), str):
-        best_params["mlp_units"] = MLP_UNIT_SEARCH_SPACE[best_params["mlp_units"]]
+    best_params["mlp_units"] = _decode_mlp_units(best_params.get("mlp_units"))
     config.models["nbeatsx"].update(best_params)
 
 
