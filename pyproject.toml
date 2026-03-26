@@ -7,7 +7,7 @@ name = "pjm-dayahead-foundation"
 version = "0.1.0"
 description = "Reproducible day-ahead electricity price forecasting foundation for PJM/COMED."
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "OpenAI Codex" }]
 dependencies = [

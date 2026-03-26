@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,9 @@ class ProjectConfig:
         return self.raw["report"]
 
     def resolve_path(self, relative_path: str) -> Path:
-        return (self.path.parent.parent / relative_path).resolve()
+        override = os.environ.get("PJM_PROJECT_ROOT_OVERRIDE") or self.project.get("root_override")
+        base_path = Path(override).resolve() if override else self.path.parent.parent
+        return (base_path / relative_path).resolve()
 
 
 def load_config(path: str | Path) -> ProjectConfig:
@@ -49,4 +52,3 @@ def load_config(path: str | Path) -> ProjectConfig:
     with config_path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     return ProjectConfig(raw=raw, path=config_path)
-

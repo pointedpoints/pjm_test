@@ -21,12 +21,8 @@ MLP_UNIT_SEARCH_SPACE = {
 }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
+def run_tune_nbeatsx(config_path: str) -> None:
+    config = load_config(config_path)
     directories = ensure_project_directories(config)
     feature_df = pd.read_parquet(directories["processed_data_dir"] / "feature_store.parquet")
     split_boundaries = load_split_boundaries(directories["processed_data_dir"] / "split_boundaries.json")
@@ -77,13 +73,29 @@ def main() -> None:
         )
         return compute_metrics(predictions)["mae"]
 
-    study = optuna.create_study(direction="minimize")
+    storage = tuning_cfg.get("optuna_storage")
+    study_name = tuning_cfg.get("optuna_study_name", "nbeatsx_tuning")
+    if storage:
+        study = optuna.create_study(
+            study_name=study_name,
+            storage=storage,
+            direction="minimize",
+            load_if_exists=True,
+        )
+    else:
+        study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=tuning_cfg["n_trials"], catch=(RuntimeError, ValueError))
 
     output_path = directories["hyperparameter_dir"] / "nbeatsx_best_params.json"
     output_path.write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
     print(f"Saved best params to {output_path}")
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+    run_tune_nbeatsx(args.config)
 
 if __name__ == "__main__":
     main()

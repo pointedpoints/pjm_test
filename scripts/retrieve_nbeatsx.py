@@ -65,13 +65,8 @@ def _retrieval_config(config) -> RetrievalConfig:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--split", default="test", choices=["validation", "test"])
-    args = parser.parse_args()
-
-    config = load_config(args.config)
+def run_retrieve_nbeatsx(config_path: str, split: str = "test") -> None:
+    config = load_config(config_path)
     directories = ensure_project_directories(config)
     feature_df = pd.read_parquet(directories["processed_data_dir"] / "feature_store.parquet")
     split_boundaries = load_split_boundaries(directories["processed_data_dir"] / "split_boundaries.json")
@@ -136,7 +131,7 @@ def main() -> None:
     )
     validation_rag.to_parquet(_prediction_path(directories["prediction_dir"], "nbeatsx_rag", "validation", benchmark_seed), index=False)
 
-    if args.split == "validation":
+    if split == "validation":
         return
 
     test_days = get_daily_split_days(feature_df, split_boundaries, split_name="test")
@@ -158,6 +153,14 @@ def main() -> None:
         params=best_params,
     )
     test_rag.to_parquet(_prediction_path(directories["prediction_dir"], "nbeatsx_rag", "test", benchmark_seed), index=False)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--split", default="test", choices=["validation", "test"])
+    args = parser.parse_args()
+    run_retrieve_nbeatsx(args.config, split=args.split)
 
 
 if __name__ == "__main__":

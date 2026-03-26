@@ -1,0 +1,135 @@
+project:
+  name: "pjm_dayahead_foundation_kaggle"
+  root_override: "/kaggle/working/pjm_remaster_run"
+  random_seeds: [7]
+  benchmark_seed: 7
+  directories:
+    raw_data_dir: "data/raw"
+    processed_data_dir: "data/processed"
+    artifact_dir: "artifacts"
+    hyperparameter_dir: "artifacts/hyperparameters"
+    prediction_dir: "artifacts/predictions"
+    metrics_dir: "artifacts/metrics"
+    plots_dir: "artifacts/plots"
+    report_dir: "artifacts/report"
+
+dataset:
+  dataset_name: "PJM"
+  unique_id: "PJM_COMED"
+  source_url: "https://zenodo.org/records/4624805/files/PJM.csv"
+  local_csv_path: null
+  source_filename: "PJM.csv"
+  timestamp_col: "Date"
+  price_col: "Zonal COMED price"
+  exogenous_columns:
+    system_load_forecast: "System load forecast"
+    zonal_load_forecast: "Zonal COMED load foecast"
+
+features:
+  target_col: "y"
+  future_exog:
+    - "system_load_forecast"
+    - "zonal_load_forecast"
+  price_lags: [24, 168]
+  load_lags: [24, 168]
+  cyclical:
+    hour: 24
+    day_of_week: 7
+    day_of_year: 366
+    month: 12
+  holiday_country: "US"
+  scaler:
+    enabled: true
+    strategy_candidates: ["none", "standard", "robust"]
+
+backtest:
+  horizon: 24
+  freq: "h"
+  years_test: 2
+  validation_days: 182
+  rolling_window_days: 728
+  retrain_weekday: 0
+  retrain_weekday_name: "MON"
+  seasonal_naive_lag_hours: 168
+  benchmark_models: ["nbeatsx"]
+
+tuning:
+  model_name: "nbeatsx"
+  n_trials: 4
+  metric: "mae"
+  optuna_storage: "sqlite:////kaggle/working/pjm_remaster_run/artifacts/hyperparameters/optuna_nbeatsx.db"
+  optuna_study_name: "nbeatsx_tuning"
+  search_space:
+    input_size: [168, 336, 504]
+    learning_rate: [0.0001, 0.005]
+    batch_size: [16, 32]
+    max_steps: [400, 1200]
+    dropout: [0.0, 0.2]
+    mlp_units:
+      - [256, 256]
+      - [512, 512]
+      - [768, 768]
+
+models:
+  seasonal_naive:
+    type: "seasonal_naive"
+  lear:
+    type: "lear"
+    calibration_window_days: 728
+  dnn:
+    type: "dnn"
+    experiment_id: 1
+    nlayers: 2
+    shuffle_train: true
+    data_augmentation: false
+    calibration_window_years: 2
+    auto_generate_hyperparameters: true
+    hyperopt_max_evals: 5
+  nbeatsx:
+    type: "nbeatsx"
+    h: 24
+    input_size: 336
+    max_steps: 600
+    learning_rate: 0.0005
+    batch_size: 16
+    dropout_prob_theta: 0.05
+    scaler_type: "identity"
+    target_transform: "asinh_q95"
+    exog_scaler: "zscore"
+    early_stop_patience_steps: 10
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
+    ensemble_aggregation: "mean"
+    ensemble_members:
+      - seed_offset: 0
+      - seed_offset: 17
+        input_size: 168
+      - seed_offset: 29
+        input_size: 504
+    stack_types: ["trend", "seasonality", "identity"]
+    mlp_units:
+      - [768, 768]
+      - [768, 768]
+      - [768, 768]
+
+report:
+  primary_metric: "mae"
+  auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
+  include_high_volatility_week: true
+
+retrieval:
+  base_model_name: "nbeatsx"
+  output_model_name: "nbeatsx_rag"
+  history_days: 7
+  warmup_days: 182
+  top_k: 5
+  min_gap_days: 7
+  residual_clip_quantile: 0.975
+  weights:
+    price: 0.5
+    load: 0.3
+    calendar: 0.2
+  alpha_grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+  tau_grid: [0.05, 0.1, 0.2, 0.5, 1.0]
+  volatility_quantile_grid: [~, 0.8, 0.9]

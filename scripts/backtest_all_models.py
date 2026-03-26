@@ -36,31 +36,26 @@ def _load_best_params(config, hyperparameter_dir: Path) -> None:
     config.models["nbeatsx"].update(best_params)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--split", default="test", choices=["validation", "test"])
-    args = parser.parse_args()
-
-    config = load_config(args.config)
+def run_backtest_all_models(config_path: str, split: str = "test") -> None:
+    config = load_config(config_path)
     directories = ensure_project_directories(config)
     _load_best_params(config, directories["hyperparameter_dir"])
 
     feature_df = pd.read_parquet(directories["processed_data_dir"] / "feature_store.parquet")
     split_boundaries = load_split_boundaries(directories["processed_data_dir"] / "split_boundaries.json")
-    forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=args.split)
+    forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=split)
 
     for model_name in config.backtest["benchmark_models"]:
         seeds = config.project["random_seeds"] if model_name == "nbeatsx" else [config.project["benchmark_seed"]]
         for seed in seeds:
-            output_path = directories["prediction_dir"] / f"{model_name}_{args.split}_seed{seed}.parquet"
+            output_path = directories["prediction_dir"] / f"{model_name}_{split}_seed{seed}.parquet"
             if output_path.exists():
                 print(f"Skipping existing predictions at {output_path}")
                 continue
             predictions = run_rolling_backtest(
                 config=config,
                 feature_df=feature_df,
-                split_name=args.split,
+                split_name=split,
                 forecast_days=forecast_days,
                 model_builder=lambda model_name=model_name, seed=seed: build_model(
                     config,
@@ -73,6 +68,14 @@ def main() -> None:
                 output_path=output_path,
             )
             print(f"Wrote {len(predictions)} predictions to {output_path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--split", default="test", choices=["validation", "test"])
+    args = parser.parse_args()
+    run_backtest_all_models(args.config, split=args.split)
 
 
 if __name__ == "__main__":

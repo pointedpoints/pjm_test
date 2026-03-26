@@ -8,12 +8,8 @@ from pjm_forecast.features import build_feature_frame, save_feature_frame
 from pjm_forecast.paths import ensure_project_directories
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
+def run_prepare_data(config_path: str) -> None:
+    config = load_config(config_path)
     directories = ensure_project_directories(config)
 
     csv_path = download_dataset_if_needed(config, directories["raw_data_dir"])
@@ -27,6 +23,12 @@ def main() -> None:
     print(f"Prepared dataset with {len(feature_df)} rows.")
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+    run_prepare_data(args.config)
+
+
 if __name__ == "__main__":
     main()
-
