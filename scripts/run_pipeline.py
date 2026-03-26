@@ -10,6 +10,7 @@ SCRIPT_ORDER = [
     "prepare_data.py",
     "tune_nbeatsx.py",
     "backtest_all_models.py",
+    "retrieve_nbeatsx.py",
     "evaluate_and_plot.py",
     "export_report_assets.py",
 ]
@@ -18,7 +19,7 @@ SCRIPT_ORDER = [
 def run_step(script_name: str, config_path: str, split: str) -> None:
     script_path = Path(__file__).with_name(script_name)
     command = [sys.executable, str(script_path), "--config", config_path]
-    if script_name in {"backtest_all_models.py", "evaluate_and_plot.py", "export_report_assets.py"}:
+    if script_name in {"backtest_all_models.py", "retrieve_nbeatsx.py", "evaluate_and_plot.py", "export_report_assets.py"}:
         command.extend(["--split", split])
 
     print(f"\n=== Running {script_name} ===")

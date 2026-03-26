@@ -53,7 +53,7 @@ backtest:
 
 tuning:
   model_name: "nbeatsx"
-  n_trials: 20
+  n_trials: 8
   metric: "mae"
   search_space:
     input_size: [168, 336, 504, 672]
@@ -113,3 +113,19 @@ report:
   primary_metric: "mae"
   auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
   include_high_volatility_week: true
+
+retrieval:
+  base_model_name: "nbeatsx"
+  output_model_name: "nbeatsx_rag"
+  history_days: 7
+  warmup_days: 182
+  top_k: 5
+  min_gap_days: 7
+  residual_clip_quantile: 0.975
+  weights:
+    price: 0.5
+    load: 0.3
+    calendar: 0.2
+  alpha_grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+  tau_grid: [0.05, 0.1, 0.2, 0.5, 1.0]
+  volatility_quantile_grid: [~, 0.8, 0.9]

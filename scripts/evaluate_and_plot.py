@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from itertools import combinations
+import re
 
 import pandas as pd
 
@@ -9,6 +10,9 @@ from pjm_forecast.config import load_config
 from pjm_forecast.evaluation import compute_metrics, dm_test
 from pjm_forecast.evaluation.reporting import plot_high_volatility_week, plot_hourly_mae
 from pjm_forecast.paths import ensure_project_directories
+
+
+PREDICTION_FILENAME = re.compile(r"^(?P<model>.+)_(?P<split>validation|test)_seed(?P<seed>\d+)$")
 
 
 def main() -> None:
@@ -23,6 +27,9 @@ def main() -> None:
     prediction_frames = {}
     metric_rows = []
     for prediction_file in sorted(directories["prediction_dir"].glob(f"*_{args.split}_seed*.parquet")):
+        match = PREDICTION_FILENAME.fullmatch(prediction_file.stem)
+        if match is None or match.group("split") != args.split:
+            continue
         prediction_df = pd.read_parquet(prediction_file)
         model_name = prediction_df["model"].iloc[0]
         seed = int(prediction_df["seed"].iloc[0])
@@ -62,4 +69,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
