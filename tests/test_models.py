@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
@@ -96,3 +97,31 @@ def test_build_model_can_disable_nbeatsx_ensemble() -> None:
     single_model = build_model(config, "nbeatsx", seed=7, disable_ensemble=True)
     assert len(default_model.ensemble_members) >= 2
     assert single_model.ensemble_members == []
+
+
+def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
+    model = NBEATSxModel(
+        h=24,
+        freq="h",
+        input_size=336,
+        max_steps=10,
+        learning_rate=0.001,
+        batch_size=16,
+        dropout_prob_theta=0.0,
+        scaler_type="identity",
+        stack_types=["trend", "seasonality", "identity"],
+        mlp_units=[[256, 256], [256, 256], [256, 256]],
+        futr_exog_list=["system_load_forecast"],
+        hist_exog_list=["price_lag_168"],
+        target_transform="asinh_q95",
+        exog_scaler="zscore",
+        ensemble_members=[{"seed_offset": 0}],
+        random_seed=7,
+    )
+    snapshot_dir = tmp_path / "snapshot"
+    model.save(snapshot_dir)
+    metadata = json.loads((snapshot_dir / "metadata.json").read_text(encoding="utf-8"))
+    loaded = NBEATSxModel.load(snapshot_dir)
+    assert metadata["model_config"]["target_transform"] == "asinh_q95"
+    assert loaded.target_transform == "asinh_q95"
+    assert loaded.ensemble_members == [{"seed_offset": 0}]

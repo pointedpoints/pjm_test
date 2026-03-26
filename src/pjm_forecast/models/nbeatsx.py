@@ -267,6 +267,7 @@ class NBEATSxModel(ForecastModel):
         return result.loc[:, ["ds", "y_pred"]]
 
     def save(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
         payload = {
             "h": self.h,
             "freq": self.freq,
@@ -290,9 +291,65 @@ class NBEATSxModel(ForecastModel):
             "ensemble_members": self.ensemble_members,
             "random_seed": self.random_seed,
         }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        metadata = {
+            "model_config": payload,
+            "member_states": [],
+        }
+
+        for member_index, member_state in enumerate(self._member_states):
+            member_dir = path / f"member_{member_index}"
+            member_state.nf.save(str(member_dir), save_dataset=False, overwrite=True)
+            metadata["member_states"].append(
+                {
+                    "member_dir": member_dir.name,
+                    "target_scaler": None
+                    if member_state.target_scaler is None
+                    else {
+                        "q": member_state.target_scaler.q_,
+                        "max_abs_value": member_state.target_scaler.max_abs_value_,
+                    },
+                    "exog_scaler": None
+                    if member_state.exog_scaler is None
+                    else {
+                        "mean": member_state.exog_scaler.mean_,
+                        "std": member_state.exog_scaler.std_,
+                    },
+                }
+            )
+
+        (path / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: Path) -> "NBEATSxModel":
+        metadata_path = path / "metadata.json"
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            model = cls(**metadata["model_config"])
+            model._member_states = []
+            for member_payload in metadata["member_states"]:
+                member_nf = model._neuralforecast_cls.load(str(path / member_payload["member_dir"]))
+                target_scaler_payload = member_payload["target_scaler"]
+                exog_scaler_payload = member_payload["exog_scaler"]
+                target_scaler = None
+                if target_scaler_payload is not None:
+                    target_scaler = AsinhQuantileScaler(
+                        q_=target_scaler_payload["q"],
+                        max_abs_value_=target_scaler_payload["max_abs_value"],
+                    )
+                exog_scaler = None
+                if exog_scaler_payload is not None:
+                    exog_scaler = ZScoreScaler(
+                        mean_=exog_scaler_payload["mean"],
+                        std_=exog_scaler_payload["std"],
+                    )
+                model._member_states.append(
+                    _FittedMemberState(
+                        nf=member_nf,
+                        target_scaler=target_scaler,
+                        exog_scaler=exog_scaler,
+                    )
+                )
+            return model
+
         payload = json.loads(path.read_text(encoding="utf-8"))
         return cls(**payload)
