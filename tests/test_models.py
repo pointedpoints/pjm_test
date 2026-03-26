@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pjm_forecast.config import load_config
 from pjm_forecast.models.epftoolbox_wrappers import _dnn_trials_filename
-from pjm_forecast.models.nbeatsx import AsinhQuantileScaler, ZScoreScaler
+from pjm_forecast.models.nbeatsx import AsinhQuantileScaler, NBEATSxModel, ZScoreScaler
+from pjm_forecast.models.registry import build_model
 from pjm_forecast.models.seasonal_naive import SeasonalNaiveModel
 
 
@@ -60,3 +62,37 @@ def test_zscore_scaler_skips_time_logic_and_scales_numeric_columns() -> None:
     scaler = ZScoreScaler().fit(frame, ["system_load_forecast", "zonal_load_forecast_lag_24"])
     transformed = scaler.transform_frame(frame, ["system_load_forecast", "zonal_load_forecast_lag_24"])
     assert np.allclose(transformed.mean().to_numpy(), np.array([0.0, 0.0]), atol=1e-7)
+
+
+def test_nbeatsx_resolves_ensemble_members_without_mutating_config() -> None:
+    model = NBEATSxModel(
+        h=24,
+        freq="h",
+        input_size=336,
+        max_steps=10,
+        learning_rate=0.001,
+        batch_size=16,
+        dropout_prob_theta=0.0,
+        scaler_type="identity",
+        stack_types=["trend", "seasonality", "identity"],
+        mlp_units=[[256, 256], [256, 256], [256, 256]],
+        futr_exog_list=["system_load_forecast"],
+        hist_exog_list=["price_lag_168"],
+        ensemble_members=[
+            {"seed_offset": 0},
+            {"seed_offset": 5, "input_size": 168},
+        ],
+        random_seed=7,
+    )
+    resolved = model._resolved_member_kwargs()
+    assert [member["random_seed"] for member in resolved] == [7, 12]
+    assert [member["input_size"] for member in resolved] == [336, 168]
+    assert model.ensemble_members == [{"seed_offset": 0}, {"seed_offset": 5, "input_size": 168}]
+
+
+def test_build_model_can_disable_nbeatsx_ensemble() -> None:
+    config = load_config("configs/pjm_day_ahead_v1.yaml")
+    default_model = build_model(config, "nbeatsx", seed=7)
+    single_model = build_model(config, "nbeatsx", seed=7, disable_ensemble=True)
+    assert len(default_model.ensemble_members) >= 2
+    assert single_model.ensemble_members == []

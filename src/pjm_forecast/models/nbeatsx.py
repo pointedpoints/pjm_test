@@ -12,6 +12,13 @@ from .base import ForecastModel
 
 
 @dataclass
+class _FittedMemberState:
+    nf: Any
+    target_scaler: "AsinhQuantileScaler | None"
+    exog_scaler: "ZScoreScaler | None"
+
+
+@dataclass
 class AsinhQuantileScaler:
     q_: float | None = None
     max_abs_value_: float = 8.0
@@ -89,11 +96,11 @@ class NBEATSxModel(ForecastModel):
     val_check_steps: int = 100
     validation_size: int = 168
     windows_batch_size: int = 1024
+    ensemble_aggregation: str = "mean"
+    ensemble_members: list[dict[str, Any]] = field(default_factory=list)
     random_seed: int = 7
     name: str = "nbeatsx"
-    _nf: Any = field(default=None, init=False, repr=False)
-    _target_scaler: AsinhQuantileScaler | None = field(default=None, init=False, repr=False)
-    _exog_scaler: ZScoreScaler | None = field(default=None, init=False, repr=False)
+    _member_states: list[_FittedMemberState] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         try:
@@ -129,7 +136,13 @@ class NBEATSxModel(ForecastModel):
             if column in frame.columns and column not in protected_columns and not column.startswith("price_lag_")
         ]
 
-    def _transform_frame(self, frame: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
+    def _transform_frame(
+        self,
+        frame: pd.DataFrame,
+        fit: bool = False,
+        target_scaler: AsinhQuantileScaler | None = None,
+        exog_scaler: ZScoreScaler | None = None,
+    ) -> tuple[pd.DataFrame, AsinhQuantileScaler | None, ZScoreScaler | None]:
         transformed = frame.copy()
         if self.target_transform not in {"identity", "asinh_q95"}:
             raise ValueError(f"Unsupported target_transform: {self.target_transform}")
@@ -137,64 +150,121 @@ class NBEATSxModel(ForecastModel):
             raise ValueError(f"Unsupported exog_scaler: {self.exog_scaler}")
 
         if self.target_transform == "asinh_q95":
-            if fit or self._target_scaler is None:
-                self._target_scaler = AsinhQuantileScaler().fit(transformed["y"])
+            if fit:
+                target_scaler = AsinhQuantileScaler().fit(transformed["y"])
+            if target_scaler is None:
+                raise RuntimeError("Target scaler must be fit before transform.")
             for column in self._price_columns(transformed):
-                transformed[column] = self._target_scaler.transform_series(transformed[column])
+                transformed[column] = target_scaler.transform_series(transformed[column])
 
         exog_columns = self._scaled_exog_columns(transformed)
         if self.exog_scaler == "zscore" and exog_columns:
-            if fit or self._exog_scaler is None:
-                self._exog_scaler = ZScoreScaler().fit(transformed, exog_columns)
-            transformed = self._exog_scaler.transform_frame(transformed, exog_columns)
-        return transformed
+            if fit:
+                exog_scaler = ZScoreScaler().fit(transformed, exog_columns)
+            if exog_scaler is None:
+                raise RuntimeError("Exogenous scaler must be fit before transform.")
+            transformed = exog_scaler.transform_frame(transformed, exog_columns)
+        return transformed, target_scaler, exog_scaler
+
+    def _base_model_kwargs(self) -> dict[str, Any]:
+        return {
+            "h": self.h,
+            "input_size": self.input_size,
+            "max_steps": self.max_steps,
+            "learning_rate": self.learning_rate,
+            "batch_size": self.batch_size,
+            "dropout_prob_theta": self.dropout_prob_theta,
+            "scaler_type": self.scaler_type,
+            "stack_types": self.stack_types,
+            "mlp_units": self.mlp_units,
+            "futr_exog_list": self.futr_exog_list,
+            "hist_exog_list": self.hist_exog_list,
+            "early_stop_patience_steps": self.early_stop_patience_steps,
+            "val_check_steps": self.val_check_steps,
+            "windows_batch_size": self.windows_batch_size,
+            "random_seed": self.random_seed,
+            "logger": False,
+            "enable_progress_bar": False,
+        }
+
+    def _resolved_member_kwargs(self) -> list[dict[str, Any]]:
+        base_kwargs = self._base_model_kwargs()
+        if not self.ensemble_members:
+            return [base_kwargs]
+        if self.ensemble_aggregation not in {"mean", "median"}:
+            raise ValueError(f"Unsupported ensemble_aggregation: {self.ensemble_aggregation}")
+
+        member_kwargs = []
+        for member in self.ensemble_members:
+            resolved = dict(base_kwargs)
+            member_overrides = dict(member)
+            seed_offset = int(member_overrides.pop("seed_offset", 0))
+            resolved["random_seed"] = self.random_seed + seed_offset
+            resolved.update(member_overrides)
+            member_kwargs.append(resolved)
+        return member_kwargs
 
     def fit(self, train_df: pd.DataFrame) -> None:
-        train_df = self._transform_frame(train_df, fit=True)
-        model = self._nbeatsx_cls(
-            h=self.h,
-            input_size=self.input_size,
-            max_steps=self.max_steps,
-            learning_rate=self.learning_rate,
-            batch_size=self.batch_size,
-            dropout_prob_theta=self.dropout_prob_theta,
-            scaler_type=self.scaler_type,
-            stack_types=self.stack_types,
-            mlp_units=self.mlp_units,
-            futr_exog_list=self.futr_exog_list,
-            hist_exog_list=self.hist_exog_list,
-            early_stop_patience_steps=self.early_stop_patience_steps,
-            val_check_steps=self.val_check_steps,
-            windows_batch_size=self.windows_batch_size,
-            random_seed=self.random_seed,
-            logger=False,
-            enable_progress_bar=False,
-        )
-        self._nf = self._neuralforecast_cls(models=[model], freq=self.freq)
-        fit_kwargs = {"df": train_df}
-        if self.early_stop_patience_steps > 0:
-            fit_kwargs["val_size"] = self.validation_size
-        self._nf.fit(**fit_kwargs)
+        self._member_states = []
+        for member_kwargs in self._resolved_member_kwargs():
+            transformed_train_df, target_scaler, exog_scaler = self._transform_frame(train_df, fit=True)
+            model = self._nbeatsx_cls(**member_kwargs)
+            nf = self._neuralforecast_cls(models=[model], freq=self.freq)
+            fit_kwargs = {"df": transformed_train_df}
+            if self.early_stop_patience_steps > 0:
+                fit_kwargs["val_size"] = self.validation_size
+            nf.fit(**fit_kwargs)
+            self._member_states.append(
+                _FittedMemberState(
+                    nf=nf,
+                    target_scaler=target_scaler,
+                    exog_scaler=exog_scaler,
+                )
+            )
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
-        if self._nf is None:
+        if not self._member_states:
             raise RuntimeError("NBEATSxModel must be fit before predict.")
+        member_predictions = []
+        for member_state in self._member_states:
+            transformed_history_df, _, _ = self._transform_frame(
+                history_df,
+                fit=False,
+                target_scaler=member_state.target_scaler,
+                exog_scaler=member_state.exog_scaler,
+            )
+            transformed_future_df, _, _ = self._transform_frame(
+                future_df,
+                fit=False,
+                target_scaler=member_state.target_scaler,
+                exog_scaler=member_state.exog_scaler,
+            )
 
-        history_df = self._transform_frame(history_df, fit=False)
-        future_df = self._transform_frame(future_df, fit=False)
+            expected_future = member_state.nf.make_future_dataframe(df=transformed_history_df)
+            future_inputs = transformed_future_df.loc[:, ["unique_id", "ds", *self.futr_exog_list]].copy()
+            futr_df = expected_future.merge(future_inputs, on=["unique_id", "ds"], how="left")
+            if futr_df[self.futr_exog_list].isna().any().any():
+                raise ValueError("Missing future exogenous values after aligning to NeuralForecast future grid.")
 
-        expected_future = self._nf.make_future_dataframe(df=history_df)
-        future_inputs = future_df.loc[:, ["unique_id", "ds", *self.futr_exog_list]].copy()
-        futr_df = expected_future.merge(future_inputs, on=["unique_id", "ds"], how="left")
-        if futr_df[self.futr_exog_list].isna().any().any():
-            raise ValueError("Missing future exogenous values after aligning to NeuralForecast future grid.")
+            prediction_df = member_state.nf.predict(df=transformed_history_df, futr_df=futr_df)
+            model_column = [column for column in prediction_df.columns if column not in {"unique_id", "ds"}][0]
+            prediction_df = prediction_df.rename(columns={model_column: "y_pred"}).loc[:, ["ds", "y_pred"]]
+            if member_state.target_scaler is not None and self.target_transform == "asinh_q95":
+                prediction_df["y_pred"] = member_state.target_scaler.inverse_transform_array(
+                    prediction_df["y_pred"].to_numpy()
+                )
+            member_predictions.append(prediction_df.rename(columns={"y_pred": f"y_pred_{len(member_predictions)}"}))
 
-        prediction_df = self._nf.predict(df=history_df, futr_df=futr_df)
-        model_column = [column for column in prediction_df.columns if column not in {"unique_id", "ds"}][0]
-        result = prediction_df.rename(columns={model_column: "y_pred"}).loc[:, ["ds", "y_pred"]]
-        if self._target_scaler is not None and self.target_transform == "asinh_q95":
-            result["y_pred"] = self._target_scaler.inverse_transform_array(result["y_pred"].to_numpy())
-        return result
+        result = member_predictions[0]
+        for member_prediction in member_predictions[1:]:
+            result = result.merge(member_prediction, on="ds", how="inner")
+        prediction_columns = [column for column in result.columns if column.startswith("y_pred_")]
+        predictions_array = result[prediction_columns].to_numpy(dtype=float)
+        if self.ensemble_aggregation == "median":
+            result["y_pred"] = np.median(predictions_array, axis=1)
+        else:
+            result["y_pred"] = predictions_array.mean(axis=1)
+        return result.loc[:, ["ds", "y_pred"]]
 
     def save(self, path: Path) -> None:
         payload = {
@@ -216,6 +286,8 @@ class NBEATSxModel(ForecastModel):
             "val_check_steps": self.val_check_steps,
             "validation_size": self.validation_size,
             "windows_batch_size": self.windows_batch_size,
+            "ensemble_aggregation": self.ensemble_aggregation,
+            "ensemble_members": self.ensemble_members,
             "random_seed": self.random_seed,
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

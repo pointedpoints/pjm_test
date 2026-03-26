@@ -16,6 +16,7 @@ def build_model(
     model_name: str,
     seed: int | None = None,
     hyperparameter_dir: Path | None = None,
+    disable_ensemble: bool = False,
 ):
     model_cfg = deepcopy(config.models[model_name])
     model_type = model_cfg.pop("type")
@@ -44,5 +45,7 @@ def build_model(
         model_cfg["freq"] = config.backtest["freq"]
         model_cfg["futr_exog_list"] = nbeatsx_futr_exog_columns(config)
         model_cfg["hist_exog_list"] = nbeatsx_hist_exog_columns(config)
+        if disable_ensemble:
+            model_cfg["ensemble_members"] = []
         return NBEATSxModel(**model_cfg)
     raise ValueError(f"Unsupported model type: {model_type}")

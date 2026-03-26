@@ -96,6 +96,13 @@ models:
     val_check_steps: 50
     validation_size: 168
     windows_batch_size: 512
+    ensemble_aggregation: "mean"
+    ensemble_members:
+      - seed_offset: 0
+      - seed_offset: 17
+        input_size: 168
+      - seed_offset: 29
+        input_size: 504
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]

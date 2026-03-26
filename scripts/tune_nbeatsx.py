@@ -66,7 +66,12 @@ def main() -> None:
             feature_df=feature_df,
             split_name="validation",
             forecast_days=validation_days,
-            model_builder=lambda: build_model(config, "nbeatsx", seed=config.project["benchmark_seed"]),
+            model_builder=lambda: build_model(
+                config,
+                "nbeatsx",
+                seed=config.project["benchmark_seed"],
+                disable_ensemble=True,
+            ),
             model_name="nbeatsx",
             seed=config.project["benchmark_seed"],
         )
