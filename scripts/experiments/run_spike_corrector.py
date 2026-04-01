@@ -5,8 +5,8 @@ import argparse
 from pjm_forecast.workspace import Workspace
 
 
-def run_retrieve_nbeatsx(config_path: str, split: str = "test") -> None:
-    Workspace.open(config_path).retrieve_nbeatsx(split=split)
+def run_spike_corrector(config_path: str, split: str = "test") -> None:
+    Workspace.open(config_path).run_spike_corrector(split=split)
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--split", default="test", choices=["validation", "test"])
     args = parser.parse_args()
-    run_retrieve_nbeatsx(args.config, split=args.split)
+    run_spike_corrector(args.config, split=args.split)
 
 
 if __name__ == "__main__":

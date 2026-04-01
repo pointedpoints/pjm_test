@@ -8,6 +8,7 @@ import pandas as pd
 
 class ForecastModel(ABC):
     name: str
+    supports_fitted_snapshot: bool = False
 
     @abstractmethod
     def fit(self, train_df: pd.DataFrame) -> None:
@@ -19,10 +20,9 @@ class ForecastModel(ABC):
 
     @abstractmethod
     def save(self, path: Path) -> None:
-        """Persist lightweight model metadata."""
+        """Persist model state to a file or directory path."""
 
     @classmethod
     @abstractmethod
     def load(cls, path: Path) -> "ForecastModel":
         """Load a persisted model instance."""
-

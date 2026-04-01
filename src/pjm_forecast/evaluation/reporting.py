@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
 import pandas as pd
 
 from .metrics import compute_hourly_mae
+
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 def plot_hourly_mae(predictions_by_model: dict[str, pd.DataFrame], output_path: Path) -> None:
@@ -42,4 +46,3 @@ def plot_high_volatility_week(predictions: pd.DataFrame, output_path: Path) -> N
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path)
     plt.close(fig)
-

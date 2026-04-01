@@ -1,27 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 
-from pjm_forecast.config import load_config
-from pjm_forecast.paths import ensure_project_directories
+from pjm_forecast.workspace import Workspace
 
 
 def run_export_report_assets(config_path: str, split: str = "test") -> None:
-    config = load_config(config_path)
-    directories = ensure_project_directories(config)
-    report_dir = directories["report_dir"]
-    report_dir.mkdir(parents=True, exist_ok=True)
-
-    for source in [
-        directories["metrics_dir"] / f"{split}_metrics.csv",
-        directories["metrics_dir"] / f"{split}_dm.csv",
-        directories["plots_dir"] / f"{split}_hourly_mae.png",
-        directories["plots_dir"] / f"{split}_high_vol_week.png",
-    ]:
-        if source.exists():
-            shutil.copy2(source, report_dir / source.name)
-    print(f"Report assets exported to {report_dir}")
+    copied = Workspace.open(config_path).export_report(split=split)
+    print(f"Report assets exported: {len(copied)} files.")
 
 
 def main() -> None:

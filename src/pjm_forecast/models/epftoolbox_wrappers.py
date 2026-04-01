@@ -9,18 +9,14 @@ import numpy as np
 import pandas as pd
 from hyperopt.exceptions import AllTrialsFailed
 
+from pjm_forecast.prepared_data import EPF_ALIAS_MAP
+
 from .base import ForecastModel
 
 
 def _to_epftoolbox_frame(history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
     available = pd.concat([history_df, future_df], axis=0).copy()
-    available = available.rename(
-        columns={
-            "y": "Price",
-            "system_load_forecast": "Exogenous 1",
-            "zonal_load_forecast": "Exogenous 2",
-        }
-    )
+    available = available.rename(columns=EPF_ALIAS_MAP)
     available.loc[future_df.index, "Price"] = np.nan
     available = available.set_index("ds")
     return available.loc[:, ["Price", "Exogenous 1", "Exogenous 2"]]
