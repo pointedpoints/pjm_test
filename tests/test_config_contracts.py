@@ -30,12 +30,6 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
         assert runtime_cfg["exog_scaler"] == "zscore"
         assert config.retrieval_base_model_name == "nbeatsx"
         assert config.retrieval_output_model_name == "nbeatsx_rag"
-        assert config.spike_base_model_name == "nbeatsx"
-        assert config.spike_output_model_name == "nbeatsx_spike_lgbm"
-        assert config.spike_model_family == "lightgbm"
-        assert config.stacking_base_model_names == ["seasonal_naive", "lear", "dnn", "nbeatsx"]
-        assert config.stacking_output_model_name == "lgbm_stacker"
-        assert config.stacking_model_family == "lightgbm"
 
 
 def test_load_config_rejects_nbeatsx_horizon_drift(tmp_path: Path) -> None:
@@ -56,22 +50,4 @@ def test_load_config_rejects_scaler_strategy_not_listed_in_candidates(tmp_path: 
         lambda payload: payload["features"]["scaler"].__setitem__("strategy_candidates", ["none", "standard"]),
     )
     with pytest.raises(ValueError, match="strategy_candidates"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_unsupported_spike_model_family(tmp_path: Path) -> None:
-    config_path = _write_temp_config(
-        tmp_path,
-        lambda payload: payload["spike_correction"].__setitem__("model_family", "catboost"),
-    )
-    with pytest.raises(ValueError, match="spike_correction.model_family"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_unsupported_stacking_model_family(tmp_path: Path) -> None:
-    config_path = _write_temp_config(
-        tmp_path,
-        lambda payload: payload["stacking"].__setitem__("model_family", "catboost"),
-    )
-    with pytest.raises(ValueError, match="stacking.model_family"):
         load_config(config_path)

@@ -53,14 +53,6 @@ class ProjectConfig:
         return self.raw.get("retrieval", {})
 
     @property
-    def spike_correction(self) -> dict[str, Any]:
-        return self.raw.get("spike_correction", {})
-
-    @property
-    def stacking(self) -> dict[str, Any]:
-        return self.raw.get("stacking", {})
-
-    @property
     def target_column(self) -> str:
         return str(self.features.get("target_col", "y"))
 
@@ -79,30 +71,6 @@ class ProjectConfig:
     @property
     def retrieval_output_model_name(self) -> str:
         return str(self.retrieval.get("output_model_name", "nbeatsx_rag"))
-
-    @property
-    def spike_base_model_name(self) -> str:
-        return str(self.spike_correction.get("base_model_name", "nbeatsx"))
-
-    @property
-    def spike_output_model_name(self) -> str:
-        return str(self.spike_correction.get("output_model_name", "nbeatsx_spike_lgbm"))
-
-    @property
-    def spike_model_family(self) -> str:
-        return str(self.spike_correction.get("model_family", "lightgbm"))
-
-    @property
-    def stacking_base_model_names(self) -> list[str]:
-        return [str(value) for value in self.stacking.get("base_model_names", ["seasonal_naive", "lear", "dnn", "nbeatsx"])]
-
-    @property
-    def stacking_output_model_name(self) -> str:
-        return str(self.stacking.get("output_model_name", "lgbm_stacker"))
-
-    @property
-    def stacking_model_family(self) -> str:
-        return str(self.stacking.get("model_family", "lightgbm"))
 
     def scaler_candidates(self) -> list[str]:
         scaler_cfg = self.features.get("scaler", {})
@@ -158,18 +126,6 @@ class ProjectConfig:
             raise ValueError(f"Unsupported features.scaler.strategy_candidates: {invalid_candidates}")
         if "nbeatsx" in self.models:
             self.nbeatsx_runtime_config()
-        if self.spike_correction:
-            if self.spike_model_family not in {"lightgbm", "xgboost"}:
-                raise ValueError(
-                    f"Unsupported spike_correction.model_family={self.spike_model_family!r}; expected 'lightgbm' or 'xgboost'."
-                )
-        if self.stacking:
-            if not self.stacking_base_model_names:
-                raise ValueError("stacking.base_model_names must include at least one model.")
-            if self.stacking_model_family not in {"lightgbm", "xgboost"}:
-                raise ValueError(
-                    f"Unsupported stacking.model_family={self.stacking_model_family!r}; expected 'lightgbm' or 'xgboost'."
-                )
 
     def resolve_path(self, relative_path: str) -> Path:
         override = os.environ.get("PJM_PROJECT_ROOT_OVERRIDE") or self.project.get("root_override")

@@ -22,8 +22,6 @@ from .paths import ensure_project_directories
 from .prepared_data import FeatureSchema, PreparedDataset
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
-from .spike_correction import SpikeCorrectionParams, SpikeCorrectorRunner
-from .stacking import StackingParams, StackingRunner
 
 
 SplitName = Literal["validation", "test"]
@@ -90,12 +88,6 @@ class ArtifactStore:
     def retrieval_params(self, model_name: str = "nbeatsx_rag") -> Path:
         return self.directories["hyperparameter_dir"] / f"{model_name}_best_params.json"
 
-    def spike_params(self, model_name: str = "nbeatsx_spike_lgbm") -> Path:
-        return self.directories["hyperparameter_dir"] / f"{model_name}_best_params.json"
-
-    def stacking_params(self, model_name: str = "lgbm_stacker") -> Path:
-        return self.directories["hyperparameter_dir"] / f"{model_name}_best_params.json"
-
     def report_asset(self, name: str) -> Path:
         return self.directories["report_dir"] / name
 
@@ -152,64 +144,6 @@ class ArtifactStore:
         )
         return output_path
 
-    def write_spike_params(
-        self,
-        model_name: str,
-        selected_params: SpikeCorrectionParams,
-        score_grid: dict[str, float],
-        output_model_name: str,
-        model_family: str,
-    ) -> Path:
-        output_path = self.spike_params(model_name)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(
-                {
-                    "selected_params": {
-                        "spike_quantile": float(selected_params.spike_quantile),
-                        "gate_threshold": float(selected_params.gate_threshold),
-                        "delta_clip_quantile": float(selected_params.delta_clip_quantile),
-                    },
-                    "score_grid": score_grid,
-                    "output_model_name": output_model_name,
-                    "model_family": model_family,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return output_path
-
-    def write_stacking_params(
-        self,
-        model_name: str,
-        selected_params: StackingParams,
-        score_grid: dict[str, float],
-        output_model_name: str,
-        model_family: str,
-        base_model_names: list[str] | tuple[str, ...],
-    ) -> Path:
-        output_path = self.stacking_params(model_name)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(
-                {
-                    "selected_params": {
-                        "num_leaves": int(selected_params.num_leaves),
-                        "learning_rate": float(selected_params.learning_rate),
-                        "min_child_samples": int(selected_params.min_child_samples),
-                    },
-                    "score_grid": score_grid,
-                    "output_model_name": output_model_name,
-                    "model_family": model_family,
-                    "base_model_names": list(base_model_names),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return output_path
-
     def load_retrieval_params(self, model_name: str = "nbeatsx_rag") -> dict[str, object]:
         payload = json.loads(self.retrieval_params(model_name).read_text(encoding="utf-8"))
         required = ["selected_params", "score_grid", "output_model_name"]
@@ -217,40 +151,6 @@ class ArtifactStore:
         if missing:
             raise ValueError(f"Retrieval params payload is missing keys: {missing}")
         return payload
-
-    def load_spike_params(self, model_name: str = "nbeatsx_spike_lgbm") -> dict[str, object]:
-        payload = json.loads(self.spike_params(model_name).read_text(encoding="utf-8"))
-        required = ["selected_params", "score_grid", "output_model_name", "model_family"]
-        missing = [key for key in required if key not in payload]
-        if missing:
-            raise ValueError(f"Spike params payload is missing keys: {missing}")
-        return payload
-
-    def load_stacking_params(self, model_name: str = "lgbm_stacker") -> dict[str, object]:
-        payload = json.loads(self.stacking_params(model_name).read_text(encoding="utf-8"))
-        required = ["selected_params", "score_grid", "output_model_name", "model_family", "base_model_names"]
-        missing = [key for key in required if key not in payload]
-        if missing:
-            raise ValueError(f"Stacking params payload is missing keys: {missing}")
-        return payload
-
-    def spike_diagnostics(self, split: str, model_name: str) -> Path:
-        return self.directories["metrics_dir"] / f"{split}_{model_name}_spike_diagnostics.csv"
-
-    def write_spike_diagnostics(self, split: str, model_name: str, diagnostics_df: pd.DataFrame) -> Path:
-        output_path = self.spike_diagnostics(split, model_name)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        diagnostics_df.to_csv(output_path, index=False)
-        return output_path
-
-    def stacking_diagnostics(self, split: str, model_name: str) -> Path:
-        return self.directories["metrics_dir"] / f"{split}_{model_name}_stacking_diagnostics.csv"
-
-    def write_stacking_diagnostics(self, split: str, model_name: str, diagnostics_df: pd.DataFrame) -> Path:
-        output_path = self.stacking_diagnostics(split, model_name)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        diagnostics_df.to_csv(output_path, index=False)
-        return output_path
 
     def prediction_runs(self, split: str) -> list["PredictionRun"]:
         runs: list[PredictionRun] = []
@@ -663,36 +563,3 @@ class Workspace:
         runner.apply(base_model=base_model_name, split="validation")
         if split == "test":
             runner.apply(base_model=base_model_name, split="test")
-
-    def run_spike_corrector(self, split: SplitName = "test") -> None:
-        spike_correction = self.config.spike_correction
-        if not spike_correction or spike_correction.get("enabled") is False:
-            return
-
-        base_model_name = self.config.spike_base_model_name
-        runner = SpikeCorrectorRunner(
-            self.config,
-            self.prepared_dataset(),
-            self.artifacts,
-            prediction_loader=self._load_or_backtest_prediction,
-        )
-        runner.tune(base_model=base_model_name, split="validation")
-        runner.apply(base_model=base_model_name, split="validation")
-        if split == "test":
-            runner.apply(base_model=base_model_name, split="test")
-
-    def run_lgbm_stacker(self, split: SplitName = "test") -> None:
-        stacking = self.config.stacking
-        if not stacking or stacking.get("enabled") is False:
-            return
-
-        runner = StackingRunner(
-            self.config,
-            self.prepared_dataset(),
-            self.artifacts,
-            prediction_loader=self._load_or_backtest_prediction,
-        )
-        runner.tune(split="validation")
-        runner.apply(split="validation")
-        if split == "test":
-            runner.apply(split="test")

@@ -73,10 +73,6 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.prediction("seasonal_naive", "test", 7).name == "seasonal_naive_test_seed7.parquet"
     assert workspace.artifacts.prediction_chunk_dir("seasonal_naive", "test", 7).name == "seasonal_naive_test_seed7"
     assert workspace.artifacts.report_asset("test_metrics.csv") == (tmp_path / "run" / "artifacts" / "report" / "test_metrics.csv").resolve()
-    assert workspace.artifacts.spike_params("nbeatsx_spike_lgbm").name == "nbeatsx_spike_lgbm_best_params.json"
-    assert workspace.artifacts.spike_diagnostics("test", "nbeatsx_spike_lgbm").name == "test_nbeatsx_spike_lgbm_spike_diagnostics.csv"
-    assert workspace.artifacts.stacking_params("lgbm_stacker").name == "lgbm_stacker_best_params.json"
-    assert workspace.artifacts.stacking_diagnostics("test", "lgbm_stacker").name == "test_lgbm_stacker_stacking_diagnostics.csv"
     assert workspace.artifacts.snapshot_manifest("nbeatsx_snapshot") == (
         tmp_path / "run" / "artifacts" / "models" / "nbeatsx_snapshot" / "manifest.json"
     ).resolve()
@@ -264,77 +260,3 @@ def test_workspace_retrieve_nbeatsx_only_orchestrates_runner(tmp_path: Path, mon
         (workspace.config.retrieval_base_model_name, "test"),
     ]
 
-
-def test_workspace_run_spike_corrector_only_orchestrates_runner(tmp_path: Path, monkeypatch) -> None:
-    csv_path = _write_csv(tmp_path)
-    config_path = _write_temp_config(tmp_path, csv_path)
-    workspace = Workspace.open(config_path)
-    workspace.prepare()
-    workspace.config.raw["spike_correction"]["enabled"] = True
-
-    captured: dict[str, object] = {"tune": [], "apply": []}
-
-    class StubRunner:
-        def __init__(self, config, prepared_dataset, artifacts, *, prediction_loader=None, backend_factory=None) -> None:
-            captured["config"] = config
-            captured["prepared_dataset"] = prepared_dataset
-            captured["artifacts"] = artifacts
-            captured["prediction_loader"] = prediction_loader
-            captured["backend_factory"] = backend_factory
-
-        def tune(self, base_model: str = "nbeatsx", split: str = "validation"):
-            captured["tune"].append((base_model, split))
-            return None
-
-        def apply(self, base_model: str = "nbeatsx", split: str = "test"):
-            captured["apply"].append((base_model, split))
-            return Path("ignored.parquet")
-
-    monkeypatch.setattr("pjm_forecast.workspace.SpikeCorrectorRunner", StubRunner)
-
-    workspace.run_spike_corrector("test")
-
-    assert captured["config"] is workspace.config
-    assert captured["artifacts"] is workspace.artifacts
-    assert callable(captured["prediction_loader"])
-    assert captured["tune"] == [(workspace.config.spike_base_model_name, "validation")]
-    assert captured["apply"] == [
-        (workspace.config.spike_base_model_name, "validation"),
-        (workspace.config.spike_base_model_name, "test"),
-    ]
-
-
-def test_workspace_run_lgbm_stacker_only_orchestrates_runner(tmp_path: Path, monkeypatch) -> None:
-    csv_path = _write_csv(tmp_path)
-    config_path = _write_temp_config(tmp_path, csv_path)
-    workspace = Workspace.open(config_path)
-    workspace.prepare()
-    workspace.config.raw["stacking"]["enabled"] = True
-
-    captured: dict[str, object] = {"tune": [], "apply": []}
-
-    class StubRunner:
-        def __init__(self, config, prepared_dataset, artifacts, *, prediction_loader=None, backend_factory=None) -> None:
-            captured["config"] = config
-            captured["prepared_dataset"] = prepared_dataset
-            captured["artifacts"] = artifacts
-            captured["prediction_loader"] = prediction_loader
-            captured["backend_factory"] = backend_factory
-
-        def tune(self, split: str = "validation"):
-            captured["tune"].append(split)
-            return None
-
-        def apply(self, split: str = "test"):
-            captured["apply"].append(split)
-            return Path("ignored.parquet")
-
-    monkeypatch.setattr("pjm_forecast.workspace.StackingRunner", StubRunner)
-
-    workspace.run_lgbm_stacker("test")
-
-    assert captured["config"] is workspace.config
-    assert captured["artifacts"] is workspace.artifacts
-    assert callable(captured["prediction_loader"])
-    assert captured["tune"] == ["validation"]
-    assert captured["apply"] == ["validation", "test"]

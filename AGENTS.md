@@ -14,7 +14,6 @@
 - Model layer: `src/pjm_forecast/models/registry.py` maps config model types to adapters (`seasonal_naive`, `lear`, `dnn`, `nbeatsx`).
 - Evaluation layer: `src/pjm_forecast/evaluation/*` computes scalar metrics, DM tests, and plots; `Evaluator` owns run discovery/alignment and report export remains a derived artifact copy step.
 - Retrieval layer: `src/pjm_forecast/retrieval/*` keeps retrieval math in `residual_memory.py`; `RetrievalRunner` owns warmup/tuning/apply orchestration.
-- Spike correction layer: `src/pjm_forecast/spike_correction/*` is an explicit experiment branch for GBM-based spike gating/residual correction; `SpikeCorrectorRunner` owns warmup/tuning/apply orchestration.
 
 ## Critical data and prediction contracts
 - Feature frames are expected to contain `ds`, `y`, future exogenous columns, and lag columns (see `tests/test_data_pipeline.py`).
@@ -34,8 +33,6 @@
   - `python scripts\export_report_assets.py --config configs\pjm_day_ahead_v1.yaml --split test`
 - Optional experiment:
   - `python scripts\experiments\retrieve_nbeatsx.py --config configs\pjm_day_ahead_v1.yaml --split test`
-  - `python scripts\experiments\run_spike_corrector.py --config configs\pjm_day_ahead_v1.yaml --split test`
-  - `python scripts\experiments\run_lgbm_stacker.py --config configs\pjm_day_ahead_v1.yaml --split test`
 - Test baseline:
   - `pytest`
 
@@ -50,8 +47,6 @@
 - External data source is configured in YAML (`dataset.source_url`) and downloaded only if missing.
 - Key artifacts are under `artifacts/`: `hyperparameters/`, `predictions/`, `metrics/`, `plots/`, `report/`.
 - `ArtifactStore.prediction_runs(...)` is the source for evaluation discovery; do not rebuild run identity from filename regex in callers.
-- Spike correction writes structured parameter and diagnostics artifacts; corrected predictions must still preserve the canonical prediction contract and may add debug columns.
-- LightGBM stacking is another explicit experiment branch; it consumes aligned base-model prediction runs plus feature-store columns and writes its own params/diagnostics artifacts without entering the default pipeline.
 - `artifacts/report/` is a derived export view, not the source of truth for metrics or plots.
 - `evaluate_and_plot.py` pairs runs for DM tests only when `ds` timestamps align exactly.
 
