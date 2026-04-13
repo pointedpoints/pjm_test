@@ -5,13 +5,15 @@
 - Keep changes aligned with the existing time protocol: **no UTC remapping** in v1 (`README.md`, `src/pjm_forecast/data/epftoolbox.py`).
 
 ## Architecture map (what depends on what)
-- `scripts/*.py` are the workflow entrypoints; they orchestrate package modules and read one YAML config (`configs/pjm_day_ahead_v1.yaml`).
-- `src/pjm_forecast/config.py` + `src/pjm_forecast/paths.py` are the wiring layer. Always load config via `load_config(...)` and create dirs via `ensure_project_directories(...)`.
+- `src/pjm_forecast/workspace.py` is the workflow boundary. `Workspace.open(...)` owns config loading, directory resolution, artifact paths, and stage orchestration.
+- `scripts/*.py` are CLI shims over `Workspace`; benchmark scripts stay at the top level, optional branches live under `scripts/experiments/` and `scripts/ops/`.
+- `src/pjm_forecast/config.py` + `src/pjm_forecast/paths.py` remain low-level wiring helpers behind `Workspace`.
 - Data layer: `src/pjm_forecast/data/epftoolbox.py` downloads CSV and normalizes to panel columns `unique_id, ds, y, system_load_forecast, zonal_load_forecast`.
 - Feature layer: `src/pjm_forecast/features/engineering.py` adds calendar/cyclical features and lag features; preserves `ds` hourly ordering.
 - Backtest layer: `src/pjm_forecast/backtest/engine.py` applies rolling windows + weekly retrain policy and enforces exact horizon row count.
 - Model layer: `src/pjm_forecast/models/registry.py` maps config model types to adapters (`seasonal_naive`, `lear`, `dnn`, `nbeatsx`).
-- Evaluation layer: `src/pjm_forecast/evaluation/*` computes scalar metrics, DM tests, and plots; `scripts/export_report_assets.py` copies report artifacts.
+- Evaluation layer: `src/pjm_forecast/evaluation/*` computes scalar metrics, DM tests, and plots; `Evaluator` owns run discovery/alignment and report export remains a derived artifact copy step.
+- Retrieval layer: `src/pjm_forecast/retrieval/*` keeps retrieval math in `residual_memory.py`; `RetrievalRunner` owns warmup/tuning/apply orchestration.
 
 ## Critical data and prediction contracts
 - Feature frames are expected to contain `ds`, `y`, future exogenous columns, and lag columns (see `tests/test_data_pipeline.py`).
@@ -29,6 +31,8 @@
   - `python scripts\backtest_all_models.py --config configs\pjm_day_ahead_v1.yaml --split test`
   - `python scripts\evaluate_and_plot.py --config configs\pjm_day_ahead_v1.yaml --split test`
   - `python scripts\export_report_assets.py --config configs\pjm_day_ahead_v1.yaml --split test`
+- Optional experiment:
+  - `python scripts\experiments\retrieve_nbeatsx.py --config configs\pjm_day_ahead_v1.yaml --split test`
 - Test baseline:
   - `pytest`
 
@@ -42,5 +46,7 @@
 ## Integration points and artifacts
 - External data source is configured in YAML (`dataset.source_url`) and downloaded only if missing.
 - Key artifacts are under `artifacts/`: `hyperparameters/`, `predictions/`, `metrics/`, `plots/`, `report/`.
+- `ArtifactStore.prediction_runs(...)` is the source for evaluation discovery; do not rebuild run identity from filename regex in callers.
+- `artifacts/report/` is a derived export view, not the source of truth for metrics or plots.
 - `evaluate_and_plot.py` pairs runs for DM tests only when `ds` timestamps align exactly.
 

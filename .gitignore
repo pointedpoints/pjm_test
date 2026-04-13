@@ -8,11 +8,17 @@ tmp_pytest/
 tmp_local/
 pytest_cache_local/
 .tmp/
+lightning_logs/
+.ipynb_checkpoints/
 *.pyc
 *.pyo
 *.pyd
 data/raw/
 data/processed/
+data/processed_current/
 artifacts/**
+artifacts_current/
+artifacts_current_smoke/
 !artifacts/.gitkeep
 !data/.gitkeep
+tmp_resume_check.parquet

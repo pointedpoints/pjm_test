@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
-import pandas as pd
-
-from pjm_forecast.models.nbeatsx import NBEATSxModel
+from pjm_forecast.ops import predict_nbeatsx_snapshot
 
 
 def run_predict_nbeatsx_snapshot(snapshot_path: str, history_path: str, future_path: str, output_path: str) -> None:
-    model = NBEATSxModel.load(Path(snapshot_path))
-    history_df = pd.read_parquet(history_path)
-    future_df = pd.read_parquet(future_path)
-    predictions = model.predict(history_df=history_df, future_df=future_df)
-    predictions.to_parquet(output_path, index=False)
+    predict_nbeatsx_snapshot(snapshot_path, history_path, future_path, output_path)
     print(f"Wrote predictions to {output_path}")
 
 

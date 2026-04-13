@@ -10,6 +10,7 @@ from pjm_forecast.config import load_config
 from pjm_forecast.models.epftoolbox_wrappers import _dnn_trials_filename
 from pjm_forecast.models.nbeatsx import AsinhQuantileScaler, NBEATSxModel, ZScoreScaler
 from pjm_forecast.models.registry import build_model
+from pjm_forecast.prepared_data import FeatureSchema
 from pjm_forecast.models.seasonal_naive import SeasonalNaiveModel
 
 
@@ -93,10 +94,18 @@ def test_nbeatsx_resolves_ensemble_members_without_mutating_config() -> None:
 
 def test_build_model_can_disable_nbeatsx_ensemble() -> None:
     config = load_config("configs/pjm_day_ahead_v1.yaml")
+    schema = FeatureSchema(config)
     default_model = build_model(config, "nbeatsx", seed=7)
     single_model = build_model(config, "nbeatsx", seed=7, disable_ensemble=True)
     assert len(default_model.ensemble_members) >= 2
     assert single_model.ensemble_members == []
+    assert default_model.h == config.prediction_horizon
+    assert default_model.freq == config.prediction_freq
+    assert default_model.target_transform == "asinh_q95"
+    assert default_model.exog_scaler == "zscore"
+    assert default_model.futr_exog_list == schema.nbeatsx_futr_exog_columns()
+    assert default_model.hist_exog_list == schema.nbeatsx_hist_exog_columns()
+    assert default_model.protected_exog_columns == schema.nbeatsx_protected_exog_columns()
 
 
 def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
@@ -113,6 +122,7 @@ def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
         mlp_units=[[256, 256], [256, 256], [256, 256]],
         futr_exog_list=["system_load_forecast"],
         hist_exog_list=["price_lag_168"],
+        protected_exog_columns=["is_weekend", "is_holiday"],
         target_transform="asinh_q95",
         exog_scaler="zscore",
         ensemble_members=[{"seed_offset": 0}],
@@ -123,5 +133,7 @@ def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
     metadata = json.loads((snapshot_dir / "metadata.json").read_text(encoding="utf-8"))
     loaded = NBEATSxModel.load(snapshot_dir)
     assert metadata["model_config"]["target_transform"] == "asinh_q95"
+    assert metadata["model_config"]["protected_exog_columns"] == ["is_weekend", "is_holiday"]
     assert loaded.target_transform == "asinh_q95"
+    assert loaded.protected_exog_columns == ["is_weekend", "is_holiday"]
     assert loaded.ensemble_members == [{"seed_offset": 0}]

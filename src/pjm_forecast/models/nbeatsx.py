@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pjm_forecast.prepared_data import default_nbeatsx_protected_exog_columns
+
 from .base import ForecastModel
 
 
@@ -90,6 +92,7 @@ class NBEATSxModel(ForecastModel):
     mlp_units: list[list[int]]
     futr_exog_list: list[str]
     hist_exog_list: list[str]
+    protected_exog_columns: list[str] = field(default_factory=default_nbeatsx_protected_exog_columns)
     target_transform: str = "identity"
     exog_scaler: str = "identity"
     early_stop_patience_steps: int = -1
@@ -100,6 +103,7 @@ class NBEATSxModel(ForecastModel):
     ensemble_members: list[dict[str, Any]] = field(default_factory=list)
     random_seed: int = 7
     name: str = "nbeatsx"
+    supports_fitted_snapshot: bool = True
     _member_states: list[_FittedMemberState] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -115,21 +119,7 @@ class NBEATSxModel(ForecastModel):
         return [column for column in frame.columns if column == "y" or column.startswith("price_lag_")]
 
     def _scaled_exog_columns(self, frame: pd.DataFrame) -> list[str]:
-        protected_columns = {
-            "unique_id",
-            "ds",
-            "y",
-            "is_weekend",
-            "is_holiday",
-            "hour_sin",
-            "hour_cos",
-            "day_of_week_sin",
-            "day_of_week_cos",
-            "day_of_year_sin",
-            "day_of_year_cos",
-            "month_sin",
-            "month_cos",
-        }
+        protected_columns = {"unique_id", "ds", "y", *self.protected_exog_columns}
         return [
             column
             for column in [*self.futr_exog_list, *self.hist_exog_list]
@@ -281,6 +271,7 @@ class NBEATSxModel(ForecastModel):
             "mlp_units": self.mlp_units,
             "futr_exog_list": self.futr_exog_list,
             "hist_exog_list": self.hist_exog_list,
+            "protected_exog_columns": self.protected_exog_columns,
             "target_transform": self.target_transform,
             "exog_scaler": self.exog_scaler,
             "early_stop_patience_steps": self.early_stop_patience_steps,
