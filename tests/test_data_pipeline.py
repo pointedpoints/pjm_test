@@ -76,3 +76,14 @@ def test_feature_schema_exposes_model_column_groups() -> None:
     assert "price_lag_168" in hist_columns
     assert "system_load_forecast_lag_168" in hist_columns
     assert "zonal_load_forecast_lag_168" in hist_columns
+
+
+def test_current_processed_nbeatsx_exogenous_contract_is_symmetric_for_weather_signals() -> None:
+    config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
+    schema = FeatureSchema(config)
+    contract = schema.nbeatsx_exogenous_contract()
+
+    assert "weather_temp_spread" in contract.signal_futr_exog_columns
+    assert "weather_temp_spread_lag_24" in contract.hist_exog_columns
+    assert "weather_temp_spread_lag_168" in contract.hist_exog_columns
+    assert contract.future_only_signal_columns() == []

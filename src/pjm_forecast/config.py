@@ -29,6 +29,10 @@ class ProjectConfig:
         return self.raw["dataset"]
 
     @property
+    def dataset_source_type(self) -> str:
+        return str(self.dataset.get("source_type", "epftoolbox"))
+
+    @property
     def features(self) -> dict[str, Any]:
         return self.raw["features"]
 
@@ -53,6 +57,10 @@ class ProjectConfig:
         return self.raw.get("retrieval", {})
 
     @property
+    def weather(self) -> dict[str, Any]:
+        return self.raw.get("weather", {})
+
+    @property
     def target_column(self) -> str:
         return str(self.features.get("target_col", "y"))
 
@@ -71,6 +79,29 @@ class ProjectConfig:
     @property
     def retrieval_output_model_name(self) -> str:
         return str(self.retrieval.get("output_model_name", "nbeatsx_rag"))
+
+    @property
+    def weather_enabled(self) -> bool:
+        return bool(self.weather.get("enabled", False))
+
+    def weather_output_columns(self) -> list[str]:
+        return [str(value) for value in self.weather.get("output_columns", [])]
+
+    def without_weather_feature_contracts(self) -> "ProjectConfig":
+        raw_copy = yaml.safe_load(yaml.safe_dump(self.raw, sort_keys=False))
+        weather_columns = set(self.weather_output_columns())
+        raw_copy["features"]["future_exog"] = [
+            column for column in raw_copy["features"].get("future_exog", [])
+            if str(column) not in weather_columns
+        ]
+        if "lag_sources" in raw_copy["features"]:
+            raw_copy["features"]["lag_sources"] = [
+                column for column in raw_copy["features"]["lag_sources"]
+                if str(column) not in weather_columns
+            ]
+        raw_copy["weather"] = dict(raw_copy.get("weather", {}))
+        raw_copy["weather"]["enabled"] = False
+        return ProjectConfig(raw=raw_copy, path=self.path)
 
     def scaler_candidates(self) -> list[str]:
         scaler_cfg = self.features.get("scaler", {})
@@ -124,8 +155,38 @@ class ProjectConfig:
         invalid_candidates = [value for value in self.scaler_candidates() if value not in NBEATSX_SCALER_STRATEGIES]
         if invalid_candidates:
             raise ValueError(f"Unsupported features.scaler.strategy_candidates: {invalid_candidates}")
+        if self.dataset_source_type not in {"epftoolbox", "pjm_official", "official_weather_ready"}:
+            raise ValueError(f"Unsupported dataset.source_type={self.dataset_source_type!r}.")
+        if self.weather_enabled:
+            self.validate_weather_contracts()
         if "nbeatsx" in self.models:
             self.nbeatsx_runtime_config()
+
+    def validate_weather_contracts(self) -> None:
+        weather_cfg = self.weather
+        provider = str(weather_cfg.get("provider", ""))
+        if provider not in {"open_meteo_historical_forecast"}:
+            raise ValueError(f"Unsupported weather.provider={provider!r}.")
+
+        points = weather_cfg.get("points", [])
+        if not points:
+            raise ValueError("weather.enabled=true requires at least one configured weather.points entry.")
+        for point in points:
+            missing = [key for key in ["name", "latitude", "longitude", "weight"] if key not in point]
+            if missing:
+                raise ValueError(f"weather.points entries are missing required keys: {missing}")
+
+        output_columns = self.weather_output_columns()
+        if not output_columns:
+            raise ValueError("weather.enabled=true requires weather.output_columns to be configured.")
+
+        future_exog = {str(column) for column in self.features.get("future_exog", [])}
+        missing_outputs = [column for column in output_columns if column not in future_exog]
+        if missing_outputs:
+            raise ValueError(
+                "weather.output_columns must also be listed in features.future_exog; "
+                f"missing: {missing_outputs}"
+            )
 
     def resolve_path(self, relative_path: str) -> Path:
         override = os.environ.get("PJM_PROJECT_ROOT_OVERRIDE") or self.project.get("root_override")

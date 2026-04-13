@@ -17,7 +17,11 @@ def _write_temp_config(tmp_path: Path, mutate) -> Path:
 
 
 def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
-    for path in [Path("configs/pjm_day_ahead_v1.yaml"), Path("configs/pjm_day_ahead_kaggle.yaml")]:
+    for path in [
+        Path("configs/pjm_day_ahead_v1.yaml"),
+        Path("configs/pjm_day_ahead_kaggle.yaml"),
+        Path("configs/pjm_day_ahead_current_processed.yaml"),
+    ]:
         config = load_config(path)
         runtime_cfg = config.nbeatsx_runtime_config()
         assert config.target_column == "y"

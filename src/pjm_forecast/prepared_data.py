@@ -13,7 +13,7 @@ from pandas.api.types import is_datetime64_any_dtype
 from .config import ProjectConfig
 
 
-PANEL_ID_COLUMNS = ["unique_id", "ds", "system_load_forecast", "zonal_load_forecast"]
+PANEL_ID_COLUMNS = ["unique_id", "ds"]
 PREDICTION_COLUMNS = ["ds", "y", "y_pred", "model", "split", "seed", "quantile", "metadata"]
 EPF_ALIAS_MAP = {
     "y": "Price",
@@ -52,23 +52,55 @@ def default_nbeatsx_protected_exog_columns() -> list[str]:
 
 
 @dataclass(frozen=True)
+class NBEATSxExogenousContract:
+    target_column: str
+    signal_futr_exog_columns: list[str]
+    calendar_futr_exog_columns: list[str]
+    futr_exog_columns: list[str]
+    lag_source_columns: list[str]
+    hist_exog_columns: list[str]
+    protected_exog_columns: list[str]
+
+    def future_only_signal_columns(self) -> list[str]:
+        return [column for column in self.signal_futr_exog_columns if column not in self.lag_source_columns]
+
+    def required_feature_columns(self) -> list[str]:
+        return [self.target_column, *self.futr_exog_columns, *self.hist_exog_columns]
+
+
+@dataclass(frozen=True)
 class FeatureSchema:
     config: ProjectConfig
 
     def raw_column_map(self) -> dict[str, str]:
         dataset_cfg = self.config.dataset
-        return {
+        raw_map = {
             dataset_cfg["timestamp_col"]: "ds",
             dataset_cfg["price_col"]: self.config.target_column,
-            dataset_cfg["exogenous_columns"]["system_load_forecast"]: "system_load_forecast",
-            dataset_cfg["exogenous_columns"]["zonal_load_forecast"]: "zonal_load_forecast",
         }
+        for canonical_name, raw_name in dataset_cfg.get("exogenous_columns", {}).items():
+            raw_map[raw_name] = canonical_name
+        return raw_map
 
     def panel_columns(self) -> list[str]:
-        return ["unique_id", "ds", self.config.target_column, *PANEL_ID_COLUMNS[2:]]
+        columns = ["unique_id", "ds", self.config.target_column]
+        for column in [*self.future_exog_columns(), *self.lag_source_columns()]:
+            if column not in columns:
+                columns.append(column)
+        return columns
 
     def future_exog_columns(self) -> list[str]:
         return list(self.config.features["future_exog"])
+
+    def lag_source_columns(self) -> list[str]:
+        configured = self.config.features.get("lag_sources")
+        if configured is None:
+            return self.future_exog_columns()
+        return [str(column) for column in configured]
+
+    def source_lag_hours(self) -> list[int]:
+        lag_values = self.config.features.get("source_lags", self.config.features.get("load_lags", []))
+        return [int(value) for value in lag_values]
 
     def cyclical_bases(self) -> list[str]:
         return list(self.config.features["cyclical"])
@@ -85,33 +117,45 @@ class FeatureSchema:
     def price_lag_columns(self) -> list[str]:
         return [f"price_lag_{lag}" for lag in self.config.features["price_lags"]]
 
-    def load_lag_columns(self) -> list[str]:
+    def source_lag_columns(self) -> list[str]:
         columns: list[str] = []
-        for lag in self.config.features["load_lags"]:
-            columns.extend(
-                [
-                    f"system_load_forecast_lag_{lag}",
-                    f"zonal_load_forecast_lag_{lag}",
-                ]
-            )
+        for lag in self.source_lag_hours():
+            for source_column in self.lag_source_columns():
+                columns.append(f"{source_column}_lag_{lag}")
         return columns
+
+    def load_lag_columns(self) -> list[str]:
+        return self.source_lag_columns()
 
     def feature_columns(self) -> list[str]:
         return [
             *self.panel_columns(),
             *self.calendar_columns(),
             *self.price_lag_columns(),
-            *self.load_lag_columns(),
+            *self.source_lag_columns(),
         ]
 
     def nbeatsx_futr_exog_columns(self) -> list[str]:
         return [*self.future_exog_columns(), *self.calendar_columns()]
 
     def nbeatsx_hist_exog_columns(self) -> list[str]:
-        return [*self.price_lag_columns(), *self.load_lag_columns()]
+        return [*self.price_lag_columns(), *self.source_lag_columns()]
 
     def nbeatsx_protected_exog_columns(self) -> list[str]:
         return [*default_nbeatsx_protected_exog_columns()]
+
+    def nbeatsx_exogenous_contract(self) -> NBEATSxExogenousContract:
+        signal_futr_exog_columns = self.future_exog_columns()
+        calendar_futr_exog_columns = self.calendar_columns()
+        return NBEATSxExogenousContract(
+            target_column=self.config.target_column,
+            signal_futr_exog_columns=signal_futr_exog_columns,
+            calendar_futr_exog_columns=calendar_futr_exog_columns,
+            futr_exog_columns=[*signal_futr_exog_columns, *calendar_futr_exog_columns],
+            lag_source_columns=self.lag_source_columns(),
+            hist_exog_columns=[*self.price_lag_columns(), *self.source_lag_columns()],
+            protected_exog_columns=self.nbeatsx_protected_exog_columns(),
+        )
 
     def retrieval_price_columns(self) -> list[str]:
         return [self.config.target_column]
@@ -137,15 +181,11 @@ class FeatureSchema:
 
     def normalize_panel_frame(self, raw_df: pd.DataFrame) -> pd.DataFrame:
         renamed = raw_df.rename(columns=self.raw_column_map())
-        missing = [
-            column
-            for column in ["ds", self.config.target_column, "system_load_forecast", "zonal_load_forecast"]
-            if column not in renamed.columns
-        ]
+        missing = [column for column in self.panel_columns()[1:] if column not in renamed.columns]
         if missing:
             raise ValueError(f"Dataset is missing required mapped columns: {missing}")
 
-        panel_df = renamed.loc[:, ["ds", self.config.target_column, "system_load_forecast", "zonal_load_forecast"]].copy()
+        panel_df = renamed.loc[:, [column for column in self.panel_columns() if column != "unique_id"]].copy()
         panel_df["ds"] = pd.to_datetime(panel_df["ds"], utc=False)
         panel_df["unique_id"] = self.config.dataset["unique_id"]
         panel_df = panel_df.sort_values("ds").reset_index(drop=True)
@@ -172,9 +212,9 @@ class FeatureSchema:
 
         for lag in self.config.features["price_lags"]:
             feature_df[f"price_lag_{lag}"] = feature_df[self.config.target_column].shift(lag)
-        for lag in self.config.features["load_lags"]:
-            feature_df[f"system_load_forecast_lag_{lag}"] = feature_df["system_load_forecast"].shift(lag)
-            feature_df[f"zonal_load_forecast_lag_{lag}"] = feature_df["zonal_load_forecast"].shift(lag)
+        for lag in self.source_lag_hours():
+            for source_column in self.lag_source_columns():
+                feature_df[f"{source_column}_lag_{lag}"] = feature_df[source_column].shift(lag)
 
         feature_df = feature_df.loc[:, self.feature_columns()].copy()
         self.validate_feature_frame(feature_df)
@@ -197,6 +237,10 @@ class FeatureSchema:
         if feature_df[non_lag_columns].isna().any().any():
             missing = feature_df[non_lag_columns].isna().sum()
             raise ValueError(f"Feature frame contains missing non-lag values: {missing.to_dict()}")
+
+    def validate_nbeatsx_feature_frame(self, feature_df: pd.DataFrame) -> None:
+        contract = self.nbeatsx_exogenous_contract()
+        self._require_columns(feature_df, contract.required_feature_columns(), "nbeatsx feature frame")
 
     def validate_prediction_frame(self, prediction_df: pd.DataFrame, require_metadata: bool = True) -> None:
         self._require_columns(prediction_df, self.prediction_columns(), "prediction frame")

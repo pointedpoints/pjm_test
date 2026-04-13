@@ -12,7 +12,7 @@ import pandas as pd
 
 from .backtest import get_daily_split_days, run_rolling_backtest
 from .config import ProjectConfig, load_config
-from .data import download_dataset_if_needed
+from .data import prepare_dataset
 from .evaluation import compute_metrics
 from .evaluation.evaluator import Evaluator
 from .model_io import load_model_snapshot, save_model_snapshot_bundle, validate_model_prediction_output
@@ -22,16 +22,10 @@ from .paths import ensure_project_directories
 from .prepared_data import FeatureSchema, PreparedDataset
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
-
-
 SplitName = Literal["validation", "test"]
 
 
-MLP_UNIT_SEARCH_SPACE = {
-    "256x256": [[256, 256], [256, 256], [256, 256]],
-    "512x512": [[512, 512], [512, 512], [512, 512]],
-    "768x768": [[768, 768], [768, 768], [768, 768]],
-}
+DEFAULT_MLP_UNIT_SEARCH_OPTIONS = ["256x256", "512x512", "768x768"]
 
 
 def decode_mlp_units(value):
@@ -45,6 +39,24 @@ def decode_mlp_units(value):
     width_in = int(match.group(1))
     width_out = int(match.group(2))
     return [[width_in, width_out], [width_in, width_out], [width_in, width_out]]
+
+
+def encode_mlp_units(value) -> str:
+    if isinstance(value, str):
+        decode_mlp_units(value)
+        return value
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        width_in = int(value[0])
+        width_out = int(value[1])
+        return f"{width_in}x{width_out}"
+    raise ValueError(f"Unsupported mlp_units option: {value!r}")
+
+
+def resolve_mlp_unit_search_options(tuning_cfg: dict[str, object]) -> list[str]:
+    configured = tuning_cfg.get("search_space", {}).get("mlp_units")
+    if not configured:
+        return list(DEFAULT_MLP_UNIT_SEARCH_OPTIONS)
+    return [encode_mlp_units(option) for option in configured]
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,9 @@ class ArtifactStore:
 
     def panel(self) -> Path:
         return self.directories["processed_data_dir"] / "panel.parquet"
+
+    def weather_features(self) -> Path:
+        return self.directories["processed_data_dir"] / "weather_features.parquet"
 
     def best_params(self, model_name: str) -> Path:
         return self.directories["hyperparameter_dir"] / f"{model_name}_best_params.json"
@@ -367,8 +382,10 @@ class Workspace:
         return self._raw_build_model(model_name, seed=seed, disable_ensemble=disable_ensemble)
 
     def prepare(self) -> None:
-        csv_path = download_dataset_if_needed(self.config, self.directories["raw_data_dir"])
-        prepared = PreparedDataset.from_source(self.config, csv_path)
+        result = prepare_dataset(self.config, self.directories["raw_data_dir"])
+        prepared = result.prepared
+        if result.weather_df is not None:
+            result.weather_df.to_parquet(self.artifacts.weather_features(), index=False)
         prepared.save(
             panel_path=self.artifacts.panel(),
             feature_path=self.artifacts.feature_store(),
@@ -377,6 +394,7 @@ class Workspace:
 
     def tune_nbeatsx(self) -> None:
         feature_df = self.feature_frame()
+        self.schema().validate_nbeatsx_feature_frame(feature_df)
         split_boundaries = self.split_boundaries()
         validation_days = get_daily_split_days(feature_df, split_boundaries, split_name="validation")
         tuning_cfg = self.config.tuning
@@ -407,8 +425,8 @@ class Workspace:
                 tuning_cfg["search_space"]["dropout"][0],
                 tuning_cfg["search_space"]["dropout"][1],
             )
-            mlp_units_key = trial.suggest_categorical("mlp_units", list(MLP_UNIT_SEARCH_SPACE))
-            self.config.models["nbeatsx"]["mlp_units"] = MLP_UNIT_SEARCH_SPACE[mlp_units_key]
+            mlp_units_key = trial.suggest_categorical("mlp_units", resolve_mlp_unit_search_options(tuning_cfg))
+            self.config.models["nbeatsx"]["mlp_units"] = decode_mlp_units(mlp_units_key)
 
             predictions = run_rolling_backtest(
                 config=self.config,
@@ -447,6 +465,8 @@ class Workspace:
         forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=split)
 
         for model_name in self.config.backtest["benchmark_models"]:
+            if model_name == "nbeatsx":
+                self.schema().validate_nbeatsx_feature_frame(feature_df)
             seeds = self.config.project["random_seeds"] if model_name == "nbeatsx" else [self.config.project["benchmark_seed"]]
             for seed in seeds:
                 output_path = self.artifacts.prediction(model_name, split, seed)

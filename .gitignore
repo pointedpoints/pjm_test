@@ -15,6 +15,10 @@ lightning_logs/
 *.pyd
 data/raw/
 data/processed/
+data/processed_current/
 artifacts/**
+artifacts_current/
+artifacts_current_smoke/
 !artifacts/.gitkeep
 !data/.gitkeep
+tmp_resume_check.parquet

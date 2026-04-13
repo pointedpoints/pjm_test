@@ -6,9 +6,11 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from pjm_forecast.data.ingress import PreparedDataResult
 from pjm_forecast.models.base import ForecastModel
 from pjm_forecast.pipeline import STAGE_ORDER
-from pjm_forecast.workspace import Workspace
+from pjm_forecast.prepared_data import PreparedDataset
+from pjm_forecast.workspace import Workspace, resolve_mlp_unit_search_options
 
 
 class SnapshotStubModel(ForecastModel):
@@ -51,7 +53,7 @@ def _write_csv(tmp_path: Path, hours: int = 24 * 420) -> Path:
     return csv_path
 
 
-def _write_temp_config(tmp_path: Path, csv_path: Path) -> Path:
+def _write_temp_config(tmp_path: Path, csv_path: Path, *, with_weather: bool = False) -> Path:
     base_config = yaml.safe_load(Path("configs/pjm_day_ahead_v1.yaml").read_text(encoding="utf-8"))
     base_config["project"]["root_override"] = str(tmp_path / "run")
     base_config["dataset"]["local_csv_path"] = str(csv_path)
@@ -59,6 +61,34 @@ def _write_temp_config(tmp_path: Path, csv_path: Path) -> Path:
     base_config["backtest"]["validation_days"] = 28
     base_config["backtest"]["benchmark_models"] = ["seasonal_naive"]
     base_config["backtest"]["rolling_window_days"] = 8
+    if with_weather:
+        base_config["features"]["future_exog"].extend(
+            [
+                "weather_temp_mean",
+                "weather_cloud_cover_mean",
+            ]
+        )
+        base_config["features"]["lag_sources"] = [
+            "system_load_forecast",
+            "zonal_load_forecast",
+            "weather_temp_mean",
+            "weather_cloud_cover_mean",
+        ]
+        base_config["features"]["source_lags"] = [24]
+        base_config["weather"] = {
+            "enabled": True,
+            "provider": "open_meteo_historical_forecast",
+            "model": "hrrr",
+            "timezone": "America/Chicago",
+            "output_columns": [
+                "weather_temp_mean",
+                "weather_cloud_cover_mean",
+            ],
+            "points": [
+                {"name": "north", "latitude": 41.9, "longitude": -87.7, "weight": 0.6},
+                {"name": "south", "latitude": 41.7, "longitude": -87.6, "weight": 0.4},
+            ],
+        }
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(base_config, sort_keys=False), encoding="utf-8")
     return config_path
@@ -86,6 +116,15 @@ def test_pipeline_stage_order_excludes_retrieval() -> None:
         "evaluate_and_plot",
         "export_report_assets",
     ]
+
+
+def test_resolve_mlp_unit_search_options_prefers_configured_values() -> None:
+    tuning_cfg = {
+        "search_space": {
+            "mlp_units": [[256, 256], "384x384"],
+        }
+    }
+    assert resolve_mlp_unit_search_options(tuning_cfg) == ["256x256", "384x384"]
 
 
 def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Path) -> None:
@@ -124,6 +163,39 @@ def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Pat
     assert workspace.artifacts.high_vol_week_plot("test").exists()
     assert workspace.artifacts.report_asset("test_metrics.csv") in copied
     assert workspace.artifacts.report_asset("test_metrics.csv") in rebuilt
+
+
+def test_workspace_prepare_merges_optional_weather_features(tmp_path: Path, monkeypatch) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path, with_weather=True)
+    workspace = Workspace.open(config_path)
+
+    source_config = workspace.config.without_weather_feature_contracts()
+    base_prepared = PreparedDataset.from_source(source_config, csv_path)
+    weather_df = pd.DataFrame(
+        {
+            "ds": pd.to_datetime(base_prepared.panel_df["ds"], utc=False),
+            "weather_temp_mean": [5.0] * len(base_prepared.panel_df),
+            "weather_cloud_cover_mean": [70.0] * len(base_prepared.panel_df),
+        }
+    )
+    enriched_panel = base_prepared.panel_df.merge(weather_df, on="ds", how="left")
+    enriched_prepared = PreparedDataset.from_panel_frame(workspace.config, enriched_panel)
+
+    monkeypatch.setattr(
+        "pjm_forecast.workspace.prepare_dataset",
+        lambda config, raw_dir: PreparedDataResult(prepared=enriched_prepared, weather_df=weather_df),
+    )
+
+    workspace.prepare()
+
+    panel_df = pd.read_parquet(workspace.artifacts.panel())
+    feature_df = workspace.feature_frame()
+    assert "weather_temp_mean" in panel_df.columns
+    assert "weather_cloud_cover_mean" in panel_df.columns
+    assert "weather_temp_mean_lag_24" in feature_df.columns
+    assert "weather_cloud_cover_mean_lag_24" in feature_df.columns
+    assert workspace.artifacts.weather_features().exists()
 
 
 def test_artifact_store_prediction_runs_returns_metadata_without_filename_contract(tmp_path: Path) -> None:
@@ -259,4 +331,3 @@ def test_workspace_retrieve_nbeatsx_only_orchestrates_runner(tmp_path: Path, mon
         (workspace.config.retrieval_base_model_name, "validation"),
         (workspace.config.retrieval_base_model_name, "test"),
     ]
-

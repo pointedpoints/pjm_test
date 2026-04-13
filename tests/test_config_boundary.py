@@ -17,7 +17,11 @@ def _write_variant(tmp_path: Path, *, mutate) -> Path:
 
 
 def test_shipped_configs_resolve_nbeatsx_runtime_contract() -> None:
-    for config_path in [Path("configs/pjm_day_ahead_v1.yaml"), Path("configs/pjm_day_ahead_kaggle.yaml")]:
+    for config_path in [
+        Path("configs/pjm_day_ahead_v1.yaml"),
+        Path("configs/pjm_day_ahead_kaggle.yaml"),
+        Path("configs/pjm_day_ahead_current_processed.yaml"),
+    ]:
         config = load_config(config_path)
         runtime = config.nbeatsx_runtime_config()
         assert config.target_column == "y"
