@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
 
 from pjm_forecast.config import load_config
 from pjm_forecast.prepared_data import FeatureSchema, PreparedDataset
@@ -24,6 +25,14 @@ def _write_csv(tmp_path: Path, hours: int = 24 * 1200) -> Path:
     csv_path = tmp_path / "PJM.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     return csv_path
+
+
+def _write_temp_config(tmp_path: Path, mutate) -> Path:
+    payload = yaml.safe_load(Path("configs/pjm_day_ahead_v1.yaml").read_text(encoding="utf-8"))
+    mutate(payload)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return config_path
 
 
 def test_prepared_dataset_from_source_builds_canonical_panel_and_feature_contract(tmp_path: Path) -> None:
@@ -78,12 +87,132 @@ def test_feature_schema_exposes_model_column_groups() -> None:
     assert "zonal_load_forecast_lag_168" in hist_columns
 
 
-def test_current_processed_nbeatsx_exogenous_contract_is_symmetric_for_weather_signals() -> None:
+def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     schema = FeatureSchema(config)
     contract = schema.nbeatsx_exogenous_contract()
 
+    assert "system_load_forecast" not in contract.signal_futr_exog_columns
+    assert "system_load_forecast_lag_24" not in contract.hist_exog_columns
+    assert "zonal_load_forecast" in contract.signal_futr_exog_columns
+    assert "zonal_load_forecast_lag_24" in contract.hist_exog_columns
+    assert "zonal_load_forecast_lag_168" not in contract.hist_exog_columns
     assert "weather_temp_spread" in contract.signal_futr_exog_columns
-    assert "weather_temp_spread_lag_24" in contract.hist_exog_columns
-    assert "weather_temp_spread_lag_168" in contract.hist_exog_columns
-    assert contract.future_only_signal_columns() == []
+    assert "weather_apparent_temp_mean" not in contract.signal_futr_exog_columns
+    assert "heating_degree_18" in contract.signal_futr_exog_columns
+    assert "cooling_degree_22" in contract.signal_futr_exog_columns
+    assert "load_cooling_pressure" in contract.signal_futr_exog_columns
+    assert "weather_temp_spread_lag_24" not in contract.hist_exog_columns
+    assert "weather_temp_spread_lag_168" not in contract.hist_exog_columns
+    assert contract.future_only_signal_columns() == [
+        "weather_temp_mean",
+        "weather_temp_spread",
+        "weather_wind_speed_mean",
+        "weather_cloud_cover_mean",
+        "weather_precip_area_fraction",
+        "heating_degree_18",
+        "cooling_degree_22",
+        "load_cooling_pressure",
+    ]
+
+
+def test_feature_schema_builds_configured_derived_ramps(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].append("zonal_load_forecast_delta_24"),
+            payload["features"].__setitem__("lag_sources", list(payload["features"]["future_exog"])),
+            payload["features"]["lag_sources"].append("zonal_load_forecast_delta_24"),
+            payload["features"].__setitem__(
+                "derived_ramps",
+                [{"source": "zonal_load_forecast", "lag": 24, "name": "zonal_load_forecast_delta_24"}],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert "zonal_load_forecast_delta_24" in prepared.feature_df.columns
+    assert prepared.feature_df["zonal_load_forecast_delta_24"].iloc[0] == 0.0
+    assert prepared.feature_df["zonal_load_forecast_delta_24"].iloc[24] == 24.0
+    assert "zonal_load_forecast_delta_24_lag_24" in prepared.feature_df.columns
+
+
+def test_feature_schema_builds_degree_day_and_interaction_features(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].extend(
+                [
+                    "heating_degree_18",
+                    "cooling_degree_22",
+                    "weekend_heating_degree_18",
+                ]
+            ),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {
+                        "kind": "degree_day",
+                        "source": "system_load_forecast",
+                        "mode": "heating",
+                        "base": 10020.0,
+                        "name": "heating_degree_18",
+                    },
+                    {
+                        "kind": "degree_day",
+                        "source": "system_load_forecast",
+                        "mode": "cooling",
+                        "base": 10020.0,
+                        "name": "cooling_degree_22",
+                    },
+                    {
+                        "kind": "multiply",
+                        "left": "is_weekend",
+                        "right": "heating_degree_18",
+                        "name": "weekend_heating_degree_18",
+                    },
+                ],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert prepared.feature_df["heating_degree_18"].iloc[0] == 20.0
+    assert prepared.feature_df["heating_degree_18"].iloc[21] == 0.0
+    assert prepared.feature_df["cooling_degree_22"].iloc[0] == 0.0
+    assert prepared.feature_df["cooling_degree_22"].iloc[30] == 10.0
+    assert prepared.feature_df["weekend_heating_degree_18"].iloc[0] == 0.0
+
+
+def test_feature_schema_allows_hidden_source_for_derived_feature(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"].__setitem__("future_exog", ["zonal_load_forecast", "heating_degree_hidden"]),
+            payload["features"].__setitem__("lag_sources", ["zonal_load_forecast"]),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {
+                        "kind": "degree_day",
+                        "source": "system_load_forecast",
+                        "mode": "heating",
+                        "base": 10020.0,
+                        "name": "heating_degree_hidden",
+                    }
+                ],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+    contract = prepared.schema.nbeatsx_exogenous_contract()
+
+    assert "system_load_forecast" in prepared.panel_df.columns
+    assert "system_load_forecast" not in contract.signal_futr_exog_columns
+    assert "heating_degree_hidden" in contract.signal_futr_exog_columns

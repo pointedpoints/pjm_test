@@ -24,31 +24,39 @@ dataset:
   timestamp_col: "Date"
   price_col: "Zonal COMED price"
   exogenous_columns:
-    system_load_forecast: "System load forecast"
     zonal_load_forecast: "Zonal COMED load foecast"
 
 features:
   target_col: "y"
   future_exog:
-    - "system_load_forecast"
     - "zonal_load_forecast"
     - "weather_temp_mean"
     - "weather_temp_spread"
-    - "weather_apparent_temp_mean"
     - "weather_wind_speed_mean"
     - "weather_cloud_cover_mean"
     - "weather_precip_area_fraction"
+    - "heating_degree_18"
+    - "cooling_degree_22"
+    - "load_cooling_pressure"
   price_lags: [24, 168]
   lag_sources:
-    - "system_load_forecast"
     - "zonal_load_forecast"
-    - "weather_temp_mean"
-    - "weather_temp_spread"
-    - "weather_apparent_temp_mean"
-    - "weather_wind_speed_mean"
-    - "weather_cloud_cover_mean"
-    - "weather_precip_area_fraction"
-  source_lags: [24, 168]
+  source_lags: [24]
+  derived_features:
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "heating"
+      base: 18.0
+      name: "heating_degree_18"
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "cooling"
+      base: 22.0
+      name: "cooling_degree_22"
+    - kind: "multiply"
+      left: "zonal_load_forecast"
+      right: "cooling_degree_22"
+      name: "load_cooling_pressure"
   cyclical:
     hour: 24
     day_of_week: 7
@@ -143,12 +151,7 @@ models:
     validation_size: 168
     windows_batch_size: 512
     ensemble_aggregation: "mean"
-    ensemble_members:
-      - seed_offset: 0
-      - seed_offset: 17
-        input_size: 168
-      - seed_offset: 29
-        input_size: 504
+    ensemble_members: []
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]

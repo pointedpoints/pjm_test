@@ -55,3 +55,53 @@ def test_load_config_rejects_scaler_strategy_not_listed_in_candidates(tmp_path: 
     )
     with pytest.raises(ValueError, match="strategy_candidates"):
         load_config(config_path)
+
+
+def test_load_config_rejects_derived_feature_with_missing_dependency(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [
+                {
+                    "kind": "multiply",
+                    "left": "missing_feature",
+                    "right": "is_weekend",
+                    "name": "bad_interaction",
+                }
+            ],
+        ),
+    )
+    with pytest.raises(ValueError, match="multiply inputs are unavailable"):
+        load_config(config_path)
+
+
+def test_load_config_allows_hidden_weather_dependency_for_derived_feature(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.__setitem__("weather", payload.get("weather", {})),
+            payload["weather"].__setitem__("enabled", True),
+            payload["weather"].__setitem__("provider", "open_meteo_historical_forecast"),
+            payload["weather"].__setitem__("output_columns", ["weather_apparent_temp_mean"]),
+            payload["weather"].__setitem__(
+                "points",
+                [{"name": "demo", "latitude": 1.0, "longitude": 2.0, "weight": 1.0}],
+            ),
+            payload["features"].__setitem__("future_exog", ["zonal_load_forecast", "heating_degree_hidden"]),
+            payload["features"].__setitem__("lag_sources", ["zonal_load_forecast"]),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {
+                        "kind": "degree_day",
+                        "source": "weather_apparent_temp_mean",
+                        "mode": "heating",
+                        "base": 18.0,
+                        "name": "heating_degree_hidden",
+                    }
+                ],
+            ),
+        ),
+    )
+    load_config(config_path)

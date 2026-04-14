@@ -84,7 +84,63 @@ class FeatureSchema:
 
     def panel_columns(self) -> list[str]:
         columns = ["unique_id", "ds", self.config.target_column]
-        for column in [*self.future_exog_columns(), *self.lag_source_columns()]:
+        for column in self.required_panel_signal_columns():
+            if column not in columns:
+                columns.append(column)
+        return columns
+
+    def derived_ramp_specs(self) -> list[tuple[str, int, str]]:
+        specs: list[tuple[str, int, str]] = []
+        for item in self.config.features.get("derived_ramps", []):
+            source = str(item["source"])
+            lag = int(item.get("lag", 24))
+            name = str(item.get("name", f"{source}_delta_{lag}"))
+            specs.append((source, lag, name))
+        return specs
+
+    def derived_feature_specs(self) -> list[dict[str, object]]:
+        specs: list[dict[str, object]] = []
+        for item in self.config.features.get("derived_features", []):
+            specs.append(dict(item))
+        return specs
+
+    def derived_dependency_columns(self) -> list[str]:
+        derived_names = set(self.derived_feature_columns())
+        calendar_names = set(self.calendar_columns())
+        dependencies: list[str] = []
+
+        for source, _, _ in self.derived_ramp_specs():
+            if source not in dependencies:
+                dependencies.append(source)
+
+        for spec in self.derived_feature_specs():
+            kind = str(spec["kind"])
+            if kind == "degree_day":
+                source = str(spec["source"])
+                if source not in dependencies:
+                    dependencies.append(source)
+                continue
+            if kind == "multiply":
+                for side in [str(spec["left"]), str(spec["right"])]:
+                    if side in derived_names or side in calendar_names:
+                        continue
+                    if side not in dependencies:
+                        dependencies.append(side)
+                continue
+        return dependencies
+
+    def derived_feature_columns(self) -> list[str]:
+        columns = [name for _, _, name in self.derived_ramp_specs()]
+        for spec in self.derived_feature_specs():
+            columns.append(str(spec["name"]))
+        return columns
+
+    def required_panel_signal_columns(self) -> list[str]:
+        derived_columns = set(self.derived_feature_columns())
+        columns: list[str] = []
+        for column in [*self.future_exog_columns(), *self.lag_source_columns(), *self.derived_dependency_columns()]:
+            if column in derived_columns:
+                continue
             if column not in columns:
                 columns.append(column)
         return columns
@@ -130,6 +186,7 @@ class FeatureSchema:
     def feature_columns(self) -> list[str]:
         return [
             *self.panel_columns(),
+            *self.derived_feature_columns(),
             *self.calendar_columns(),
             *self.price_lag_columns(),
             *self.source_lag_columns(),
@@ -210,6 +267,29 @@ class FeatureSchema:
             encoded = self._encode_cyclical(feature_df[column_name], period=period, prefix=column_name)
             feature_df = pd.concat([feature_df, encoded], axis=1)
 
+        for source_column, lag, name in self.derived_ramp_specs():
+            feature_df[name] = (feature_df[source_column] - feature_df[source_column].shift(lag)).fillna(0.0)
+        for spec in self.derived_feature_specs():
+            name = str(spec["name"])
+            kind = str(spec["kind"])
+            if kind == "degree_day":
+                source = str(spec["source"])
+                base = float(spec["base"])
+                mode = str(spec["mode"])
+                if mode == "heating":
+                    feature_df[name] = (base - feature_df[source]).clip(lower=0.0)
+                elif mode == "cooling":
+                    feature_df[name] = (feature_df[source] - base).clip(lower=0.0)
+                else:
+                    raise ValueError(f"Unsupported derived_features mode: {mode!r}")
+                continue
+            if kind == "multiply":
+                left = str(spec["left"])
+                right = str(spec["right"])
+                feature_df[name] = feature_df[left] * feature_df[right]
+                continue
+            raise ValueError(f"Unsupported derived_features kind: {kind!r}")
+
         for lag in self.config.features["price_lags"]:
             feature_df[f"price_lag_{lag}"] = feature_df[self.config.target_column].shift(lag)
         for lag in self.source_lag_hours():
@@ -233,7 +313,7 @@ class FeatureSchema:
     def validate_feature_frame(self, feature_df: pd.DataFrame) -> None:
         self._require_columns(feature_df, self.feature_columns(), "feature frame")
         self._validate_ds_series(feature_df["ds"], "feature frame")
-        non_lag_columns = [*self.panel_columns(), *self.calendar_columns()]
+        non_lag_columns = [*self.panel_columns(), *self.derived_feature_columns(), *self.calendar_columns()]
         if feature_df[non_lag_columns].isna().any().any():
             missing = feature_df[non_lag_columns].isna().sum()
             raise ValueError(f"Feature frame contains missing non-lag values: {missing.to_dict()}")

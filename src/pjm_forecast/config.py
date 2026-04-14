@@ -90,14 +90,49 @@ class ProjectConfig:
     def without_weather_feature_contracts(self) -> "ProjectConfig":
         raw_copy = yaml.safe_load(yaml.safe_dump(self.raw, sort_keys=False))
         weather_columns = set(self.weather_output_columns())
+        removed_derived_names = set(weather_columns)
+
+        def _derived_dependencies(item: dict[str, Any]) -> set[str]:
+            kind = str(item["kind"])
+            if kind == "degree_day":
+                return {str(item["source"])}
+            if kind == "multiply":
+                return {str(item["left"]), str(item["right"])}
+            return set()
+
+        changed = True
+        while changed:
+            changed = False
+            for item in raw_copy["features"].get("derived_ramps", []):
+                source = str(item["source"])
+                name = str(item.get("name", f"{source}_delta_{int(item.get('lag', 24))}"))
+                if source in removed_derived_names and name not in removed_derived_names:
+                    removed_derived_names.add(name)
+                    changed = True
+            for item in raw_copy["features"].get("derived_features", []):
+                name = str(item["name"])
+                if _derived_dependencies(item) & removed_derived_names and name not in removed_derived_names:
+                    removed_derived_names.add(name)
+                    changed = True
+
         raw_copy["features"]["future_exog"] = [
             column for column in raw_copy["features"].get("future_exog", [])
-            if str(column) not in weather_columns
+            if str(column) not in weather_columns and str(column) not in removed_derived_names
         ]
         if "lag_sources" in raw_copy["features"]:
             raw_copy["features"]["lag_sources"] = [
                 column for column in raw_copy["features"]["lag_sources"]
-                if str(column) not in weather_columns
+                if str(column) not in weather_columns and str(column) not in removed_derived_names
+            ]
+        if "derived_ramps" in raw_copy["features"]:
+            raw_copy["features"]["derived_ramps"] = [
+                item for item in raw_copy["features"]["derived_ramps"]
+                if str(item["source"]) not in weather_columns
+            ]
+        if "derived_features" in raw_copy["features"]:
+            raw_copy["features"]["derived_features"] = [
+                item for item in raw_copy["features"]["derived_features"]
+                if str(item["name"]) not in removed_derived_names
             ]
         raw_copy["weather"] = dict(raw_copy.get("weather", {}))
         raw_copy["weather"]["enabled"] = False
@@ -157,10 +192,51 @@ class ProjectConfig:
             raise ValueError(f"Unsupported features.scaler.strategy_candidates: {invalid_candidates}")
         if self.dataset_source_type not in {"epftoolbox", "pjm_official", "official_weather_ready"}:
             raise ValueError(f"Unsupported dataset.source_type={self.dataset_source_type!r}.")
+        self.validate_derived_feature_contracts()
         if self.weather_enabled:
             self.validate_weather_contracts()
         if "nbeatsx" in self.models:
             self.nbeatsx_runtime_config()
+
+    def validate_derived_feature_contracts(self) -> None:
+        derived_names: set[str] = set()
+        available_names = {
+            *self.features.get("future_exog", []),
+            *self.features.get("lag_sources", []),
+            *self.dataset.get("exogenous_columns", {}).keys(),
+            *self.weather_output_columns(),
+            *["is_weekend", "is_holiday"],
+        }
+        for item in self.features.get("derived_ramps", []):
+            source = str(item["source"])
+            if source not in available_names:
+                raise ValueError(f"derived_ramps source {source!r} must be present in future_exog or lag_sources.")
+            derived_names.add(str(item.get("name", f"{source}_delta_{int(item.get('lag', 24))}")))
+
+        available_feature_names = available_names | derived_names
+        for item in self.features.get("derived_features", []):
+            kind = str(item.get("kind", ""))
+            name = str(item.get("name", ""))
+            if not name:
+                raise ValueError("derived_features entries require a non-empty name.")
+            if kind == "degree_day":
+                source = str(item.get("source", ""))
+                mode = str(item.get("mode", ""))
+                if source not in available_feature_names:
+                    raise ValueError(f"derived_features source {source!r} must already exist before deriving {name!r}.")
+                if mode not in {"heating", "cooling"}:
+                    raise ValueError(f"derived_features mode={mode!r} is unsupported for {name!r}.")
+                if "base" not in item:
+                    raise ValueError(f"derived_features {name!r} requires a base threshold.")
+            elif kind == "multiply":
+                left = str(item.get("left", ""))
+                right = str(item.get("right", ""))
+                missing = [value for value in [left, right] if value not in available_feature_names]
+                if missing:
+                    raise ValueError(f"derived_features multiply inputs are unavailable for {name!r}: {missing}")
+            else:
+                raise ValueError(f"Unsupported derived_features kind={kind!r}.")
+            available_feature_names.add(name)
 
     def validate_weather_contracts(self) -> None:
         weather_cfg = self.weather
@@ -180,11 +256,28 @@ class ProjectConfig:
         if not output_columns:
             raise ValueError("weather.enabled=true requires weather.output_columns to be configured.")
 
-        future_exog = {str(column) for column in self.features.get("future_exog", [])}
-        missing_outputs = [column for column in output_columns if column not in future_exog]
+        required_weather_outputs = {
+            str(column) for column in self.features.get("future_exog", []) if str(column).startswith("weather_")
+        }
+        for item in self.features.get("derived_ramps", []):
+            source = str(item["source"])
+            if source.startswith("weather_"):
+                required_weather_outputs.add(source)
+        for item in self.features.get("derived_features", []):
+            kind = str(item.get("kind", ""))
+            if kind == "degree_day":
+                source = str(item.get("source", ""))
+                if source.startswith("weather_"):
+                    required_weather_outputs.add(source)
+            elif kind == "multiply":
+                for side in [str(item.get("left", "")), str(item.get("right", ""))]:
+                    if side.startswith("weather_"):
+                        required_weather_outputs.add(side)
+
+        missing_outputs = [column for column in required_weather_outputs if column not in output_columns]
         if missing_outputs:
             raise ValueError(
-                "weather.output_columns must also be listed in features.future_exog; "
+                "weather.output_columns must cover all weather future_exog columns and derived weather dependencies; "
                 f"missing: {missing_outputs}"
             )
 
