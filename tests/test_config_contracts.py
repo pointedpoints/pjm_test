@@ -105,3 +105,15 @@ def test_load_config_allows_hidden_weather_dependency_for_derived_feature(tmp_pa
         ),
     )
     load_config(config_path)
+
+
+def test_load_config_rejects_invalid_hour_indicator(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [{"kind": "hour_indicator", "hour": 25, "name": "bad_hour"}],
+        ),
+    )
+    with pytest.raises(ValueError, match="hour_indicator"):
+        load_config(config_path)

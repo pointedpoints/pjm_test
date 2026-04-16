@@ -216,3 +216,39 @@ def test_feature_schema_allows_hidden_source_for_derived_feature(tmp_path: Path)
     assert "system_load_forecast" in prepared.panel_df.columns
     assert "system_load_forecast" not in contract.signal_futr_exog_columns
     assert "heating_degree_hidden" in contract.signal_futr_exog_columns
+
+
+def test_feature_schema_builds_hour_indicator_and_sum_features(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].extend(
+                [
+                    "hour_7_pulse",
+                    "hour_19_pulse",
+                    "pressure_sum",
+                ]
+            ),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {"kind": "hour_indicator", "hour": 7, "name": "hour_7_pulse"},
+                    {"kind": "hour_indicator", "hour": 19, "name": "hour_19_pulse"},
+                    {
+                        "kind": "sum",
+                        "inputs": ["hour_7_pulse", "hour_19_pulse"],
+                        "name": "pressure_sum",
+                    },
+                ],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert prepared.feature_df.loc[7, "hour_7_pulse"] == 1.0
+    assert prepared.feature_df.loc[19, "hour_19_pulse"] == 1.0
+    assert prepared.feature_df.loc[7, "pressure_sum"] == 1.0
+    assert prepared.feature_df.loc[19, "pressure_sum"] == 1.0
+    assert prepared.feature_df.loc[8, "pressure_sum"] == 0.0

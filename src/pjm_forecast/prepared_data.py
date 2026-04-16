@@ -288,6 +288,16 @@ class FeatureSchema:
                 right = str(spec["right"])
                 feature_df[name] = feature_df[left] * feature_df[right]
                 continue
+            if kind == "sum":
+                inputs = [str(value) for value in spec.get("inputs", [])]
+                if not inputs:
+                    raise ValueError(f"derived_features sum requires at least one input for {name!r}.")
+                feature_df[name] = feature_df[inputs].sum(axis=1)
+                continue
+            if kind == "hour_indicator":
+                hour = int(spec["hour"])
+                feature_df[name] = (feature_df["hour"] == hour).astype(float)
+                continue
             raise ValueError(f"Unsupported derived_features kind: {kind!r}")
 
         for lag in self.config.features["price_lags"]:

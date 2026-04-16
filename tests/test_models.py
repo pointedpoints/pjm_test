@@ -5,6 +5,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from pjm_forecast.config import load_config
 from pjm_forecast.models.epftoolbox_wrappers import _dnn_trials_filename
@@ -137,3 +138,73 @@ def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
     assert loaded.target_transform == "asinh_q95"
     assert loaded.protected_exog_columns == ["is_weekend", "is_holiday"]
     assert loaded.ensemble_members == [{"seed_offset": 0}]
+
+
+def test_nbeatsx_spike_stack_requires_spike_hours() -> None:
+    with pytest.raises(ValueError, match="spike_hours"):
+        NBEATSxModel(
+            h=24,
+            freq="h",
+            input_size=336,
+            max_steps=10,
+            learning_rate=0.001,
+            batch_size=16,
+            dropout_prob_theta=0.0,
+            scaler_type="identity",
+            stack_types=["trend", "seasonality", "identity", "spike"],
+            mlp_units=[[256, 256], [256, 256], [256, 256], [256, 256]],
+            futr_exog_list=["zonal_load_forecast"],
+            hist_exog_list=["price_lag_24"],
+        )
+
+
+def test_nbeatsx_spike_stack_metadata_round_trip(tmp_path: Path) -> None:
+    model = NBEATSxModel(
+        h=24,
+        freq="h",
+        input_size=168,
+        max_steps=10,
+        learning_rate=0.001,
+        batch_size=16,
+        dropout_prob_theta=0.0,
+        scaler_type="identity",
+        stack_types=["trend", "seasonality", "identity", "spike"],
+        mlp_units=[[256, 256], [256, 256], [256, 256], [256, 256]],
+        n_blocks=[1, 1, 1, 1],
+        spike_hours=[7, 17, 18, 19, 20],
+        spike_kernel="triangle",
+        spike_radius=1,
+        futr_exog_list=["zonal_load_forecast"],
+        hist_exog_list=["price_lag_24"],
+        ensemble_members=[],
+        random_seed=7,
+    )
+    snapshot_dir = tmp_path / "spike_snapshot"
+    model.save(snapshot_dir)
+    loaded = NBEATSxModel.load(snapshot_dir)
+    assert loaded.stack_types == ["trend", "seasonality", "identity", "spike"]
+    assert loaded.n_blocks == [1, 1, 1, 1]
+    assert loaded.spike_hours == [7, 17, 18, 19, 20]
+    assert loaded.spike_kernel == "triangle"
+    assert loaded.spike_radius == 1
+
+
+def test_nbeatsx_spike_stack_rejects_negative_radius() -> None:
+    with pytest.raises(ValueError, match="spike_radius"):
+        NBEATSxModel(
+            h=24,
+            freq="h",
+            input_size=168,
+            max_steps=10,
+            learning_rate=0.001,
+            batch_size=16,
+            dropout_prob_theta=0.0,
+            scaler_type="identity",
+            stack_types=["trend", "seasonality", "identity", "spike"],
+            mlp_units=[[256, 256], [256, 256], [256, 256], [256, 256]],
+            n_blocks=[1, 1, 1, 1],
+            spike_hours=[7, 17, 18, 19, 20],
+            spike_radius=-1,
+            futr_exog_list=["zonal_load_forecast"],
+            hist_exog_list=["price_lag_24"],
+        )

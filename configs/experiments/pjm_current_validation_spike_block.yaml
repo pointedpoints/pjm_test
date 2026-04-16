@@ -1,0 +1,169 @@
+project:
+  name: "pjm_current_validation_spike_block"
+  random_seeds: [7]
+  benchmark_seed: 7
+  directories:
+    raw_data_dir: "../data/raw"
+    processed_data_dir: "../data/processed_current"
+    artifact_dir: "../artifacts_ablation/spike_block"
+    hyperparameter_dir: "../artifacts_ablation/spike_block/hyperparameters"
+    prediction_dir: "../artifacts_ablation/spike_block/predictions"
+    metrics_dir: "../artifacts_ablation/spike_block/metrics"
+    plots_dir: "../artifacts_ablation/spike_block/plots"
+    report_dir: "../artifacts_ablation/spike_block/report"
+
+dataset:
+  source_type: "official_weather_ready"
+  dataset_name: "PJM"
+  unique_id: "PJM_COMED"
+  source_url: "https://zenodo.org/records/4624805/files/PJM.csv"
+  local_csv_path: "../data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
+  source_filename: "PJM.csv"
+  start_date: "2021-01-01"
+  end_date: "2026-03-31"
+  timestamp_col: "Date"
+  price_col: "Zonal COMED price"
+  exogenous_columns:
+    zonal_load_forecast: "Zonal COMED load foecast"
+
+features:
+  target_col: "y"
+  future_exog:
+    - "zonal_load_forecast"
+    - "weather_temp_mean"
+    - "weather_temp_spread"
+    - "weather_wind_speed_mean"
+    - "weather_cloud_cover_mean"
+    - "weather_precip_area_fraction"
+    - "heating_degree_18"
+    - "cooling_degree_22"
+    - "load_cooling_pressure"
+  price_lags: [24, 168]
+  lag_sources:
+    - "zonal_load_forecast"
+  source_lags: [24]
+  derived_features:
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "heating"
+      base: 18.0
+      name: "heating_degree_18"
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "cooling"
+      base: 22.0
+      name: "cooling_degree_22"
+    - kind: "multiply"
+      left: "zonal_load_forecast"
+      right: "cooling_degree_22"
+      name: "load_cooling_pressure"
+  cyclical:
+    hour: 24
+    day_of_week: 7
+    day_of_year: 366
+    month: 12
+  holiday_country: "US"
+  scaler:
+    enabled: true
+    strategy_candidates: ["none", "standard", "robust"]
+
+weather:
+  enabled: true
+  provider: "open_meteo_historical_forecast"
+  model: "best_match"
+  timezone: "America/Chicago"
+  cache_dir: "../data/raw/weather"
+  precipitation_area_fraction_threshold_mm: 0.1
+  output_columns:
+    - "weather_temp_mean"
+    - "weather_temp_spread"
+    - "weather_apparent_temp_mean"
+    - "weather_wind_speed_mean"
+    - "weather_cloud_cover_mean"
+    - "weather_precip_area_fraction"
+  points:
+    - name: "chicago_lakefront"
+      latitude: 41.885
+      longitude: -87.620
+      weight: 0.24
+    - name: "ohare_northwest"
+      latitude: 41.978
+      longitude: -87.904
+      weight: 0.18
+    - name: "north_suburbs"
+      latitude: 42.148
+      longitude: -87.800
+      weight: 0.14
+    - name: "west_suburbs"
+      latitude: 41.836
+      longitude: -88.243
+      weight: 0.18
+    - name: "southwest_suburbs"
+      latitude: 41.605
+      longitude: -87.793
+      weight: 0.14
+    - name: "south_suburbs"
+      latitude: 41.525
+      longitude: -87.635
+      weight: 0.12
+
+backtest:
+  horizon: 24
+  freq: "h"
+  years_test: 1
+  validation_days: 182
+  rolling_window_days: 728
+  retrain_weekday: 0
+  retrain_weekday_name: "MON"
+  seasonal_naive_lag_hours: 168
+  benchmark_models: ["nbeatsx"]
+
+tuning:
+  model_name: "nbeatsx"
+  n_trials: 5
+  metric: "mae"
+  use_ensemble_in_tuning: false
+  search_space:
+    input_size: [168, 336, 504, 672]
+    learning_rate: [0.00005, 0.008]
+    batch_size: [16, 32, 64]
+    max_steps: [250, 900]
+    dropout: [0.0, 0.3]
+    mlp_units:
+      - [256, 256]
+      - [512, 512]
+      - [768, 768]
+
+models:
+  nbeatsx:
+    type: "nbeatsx"
+    h: 24
+    input_size: 168
+    max_steps: 860
+    learning_rate: 0.00009778302210509137
+    batch_size: 16
+    dropout_prob_theta: 0.27492275962253043
+    scaler_type: "identity"
+    target_transform: "asinh_q95"
+    exog_scaler: "zscore"
+    early_stop_patience_steps: 10
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
+    ensemble_aggregation: "mean"
+    ensemble_members: []
+    stack_types: ["trend", "seasonality", "identity", "spike"]
+    n_blocks: [1, 1, 1, 1]
+    spike_hours: [7, 17, 18, 19, 20]
+    mlp_units:
+      - [512, 512]
+      - [512, 512]
+      - [512, 512]
+
+report:
+  primary_metric: "mae"
+  auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
+  include_high_volatility_week: true
+
+retrieval:
+  enabled: false

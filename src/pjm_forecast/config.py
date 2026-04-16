@@ -98,6 +98,10 @@ class ProjectConfig:
                 return {str(item["source"])}
             if kind == "multiply":
                 return {str(item["left"]), str(item["right"])}
+            if kind == "sum":
+                return {str(value) for value in item.get("inputs", [])}
+            if kind == "hour_indicator":
+                return set()
             return set()
 
         changed = True
@@ -234,6 +238,17 @@ class ProjectConfig:
                 missing = [value for value in [left, right] if value not in available_feature_names]
                 if missing:
                     raise ValueError(f"derived_features multiply inputs are unavailable for {name!r}: {missing}")
+            elif kind == "sum":
+                inputs = [str(value) for value in item.get("inputs", [])]
+                if not inputs:
+                    raise ValueError(f"derived_features sum requires at least one input for {name!r}.")
+                missing = [value for value in inputs if value not in available_feature_names]
+                if missing:
+                    raise ValueError(f"derived_features sum inputs are unavailable for {name!r}: {missing}")
+            elif kind == "hour_indicator":
+                hour = int(item.get("hour", -1))
+                if hour < 0 or hour > 23:
+                    raise ValueError(f"derived_features hour_indicator hour={hour!r} is unsupported for {name!r}.")
             else:
                 raise ValueError(f"Unsupported derived_features kind={kind!r}.")
             available_feature_names.add(name)

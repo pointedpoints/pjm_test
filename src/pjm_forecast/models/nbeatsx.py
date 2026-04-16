@@ -13,6 +13,198 @@ from pjm_forecast.prepared_data import default_nbeatsx_protected_exog_columns
 from .base import ForecastModel
 
 
+def _build_spike_aware_nbeatsx_class() -> tuple[type[Any], type[Any]]:
+    try:
+        from neuralforecast import NeuralForecast  # type: ignore
+        from neuralforecast.losses.pytorch import MAE  # type: ignore
+        from neuralforecast.models.nbeatsx import (  # type: ignore
+            NBEATSBlock,
+            ExogenousBasis,
+            IdentityBasis,
+            NBEATSx,
+            SeasonalityBasis,
+            TrendBasis,
+        )
+        import torch  # type: ignore
+        from torch import nn  # type: ignore
+    except ImportError as exc:  # pragma: no cover - guarded by caller
+        raise ImportError("NBEATSxModel requires neuralforecast and torch to be installed.") from exc
+
+    class SpikeBasis(nn.Module):
+        """Discrete spike basis over selected forecast hours."""
+
+        def __init__(
+            self,
+            backcast_size: int,
+            forecast_size: int,
+            spike_hours: list[int],
+            spike_kernel: str = "delta",
+            spike_radius: int = 0,
+            out_features: int = 1,
+        ) -> None:
+            super().__init__()
+            if not spike_hours:
+                raise ValueError("SpikeBasis requires at least one spike hour.")
+            invalid_hours = [hour for hour in spike_hours if hour < 0 or hour >= forecast_size]
+            if invalid_hours:
+                raise ValueError(f"SpikeBasis received invalid hours for horizon {forecast_size}: {invalid_hours}")
+            if spike_kernel not in {"delta", "triangle", "box"}:
+                raise ValueError(f"Unsupported spike_kernel: {spike_kernel}")
+            if spike_radius < 0:
+                raise ValueError("SpikeBasis requires spike_radius >= 0.")
+
+            self.backcast_size = backcast_size
+            self.forecast_size = forecast_size
+            self.out_features = out_features
+            self.spike_hours = list(dict.fromkeys(int(hour) for hour in spike_hours))
+            self.spike_kernel = spike_kernel
+            self.spike_radius = int(spike_radius)
+
+            basis = np.zeros((len(self.spike_hours), forecast_size), dtype=np.float32)
+            for idx, hour in enumerate(self.spike_hours):
+                if self.spike_kernel == "delta" or self.spike_radius == 0:
+                    basis[idx, hour] = 1.0
+                    continue
+
+                start = max(0, hour - self.spike_radius)
+                end = min(forecast_size - 1, hour + self.spike_radius)
+                for target_hour in range(start, end + 1):
+                    distance = abs(target_hour - hour)
+                    if self.spike_kernel == "box":
+                        weight = 1.0
+                    else:
+                        weight = 1.0 - distance / (self.spike_radius + 1)
+                    basis[idx, target_hour] = weight
+            self.register_buffer("forecast_basis", torch.tensor(basis, dtype=torch.float32))
+
+        @property
+        def n_basis(self) -> int:
+            return int(self.forecast_basis.shape[0])
+
+        def forward(self, theta: Any) -> tuple[Any, Any]:
+            batch_size = theta.shape[0]
+            theta = theta.reshape(batch_size, self.out_features, self.n_basis)
+            forecast = torch.einsum("bon,nh->boh", theta, self.forecast_basis).permute(0, 2, 1)
+            backcast = torch.zeros(
+                batch_size,
+                self.backcast_size,
+                device=theta.device,
+                dtype=theta.dtype,
+            )
+            return backcast, forecast
+
+    class SpikeAwareNBEATSx(NBEATSx):
+        def __init__(
+            self,
+            *args: Any,
+            spike_hours: list[int] | None = None,
+            spike_kernel: str = "delta",
+            spike_radius: int = 0,
+            n_blocks: list[int] | None = None,
+            loss: Any | None = None,
+            **kwargs: Any,
+        ) -> None:
+            stack_types = list(kwargs.get("stack_types", ["identity", "trend", "seasonality"]))
+            if n_blocks is None:
+                n_blocks = [1] * len(stack_types)
+            if "spike" in stack_types and not spike_hours:
+                raise ValueError("stack_types includes 'spike' but spike_hours is empty.")
+
+            self.spike_hours = [] if spike_hours is None else [int(hour) for hour in spike_hours]
+            self.spike_kernel = str(spike_kernel)
+            self.spike_radius = int(spike_radius)
+            kwargs["n_blocks"] = n_blocks
+            kwargs["loss"] = MAE() if loss is None else loss
+            super().__init__(*args, **kwargs)
+
+        def create_stack(
+            self,
+            h: int,
+            input_size: int,
+            stack_types: list[str],
+            n_blocks: list[int],
+            mlp_units: list[list[int]],
+            dropout_prob_theta: float,
+            activation: str,
+            shared_weights: bool,
+            n_polynomials: int,
+            n_harmonics: int,
+            futr_input_size: int,
+            hist_input_size: int,
+            stat_input_size: int,
+        ) -> list[Any]:
+            if len(n_blocks) != len(stack_types):
+                raise ValueError("n_blocks must match stack_types length.")
+
+            block_list = []
+            for stack_index, stack_type in enumerate(stack_types):
+                for block_id in range(n_blocks[stack_index]):
+                    if shared_weights and block_id > 0:
+                        nbeats_block = block_list[-1]
+                    else:
+                        if stack_type == "seasonality":
+                            n_theta = (
+                                2
+                                * (self.loss.outputsize_multiplier + 1)
+                                * int(np.ceil(n_harmonics / 2 * h) - (n_harmonics - 1))
+                            )
+                            basis = SeasonalityBasis(
+                                harmonics=n_harmonics,
+                                backcast_size=input_size,
+                                forecast_size=h,
+                                out_features=self.loss.outputsize_multiplier,
+                            )
+                        elif stack_type == "trend":
+                            n_theta = (self.loss.outputsize_multiplier + 1) * (n_polynomials + 1)
+                            basis = TrendBasis(
+                                degree_of_polynomial=n_polynomials,
+                                backcast_size=input_size,
+                                forecast_size=h,
+                                out_features=self.loss.outputsize_multiplier,
+                            )
+                        elif stack_type == "identity":
+                            n_theta = input_size + self.loss.outputsize_multiplier * h
+                            basis = IdentityBasis(
+                                backcast_size=input_size,
+                                forecast_size=h,
+                                out_features=self.loss.outputsize_multiplier,
+                            )
+                        elif stack_type == "exogenous":
+                            if futr_input_size + stat_input_size <= 0:
+                                raise ValueError("No stats or future exogenous. ExogenousBlock not supported.")
+                            n_theta = 2 * (futr_input_size + stat_input_size)
+                            basis = ExogenousBasis(forecast_size=h)
+                        elif stack_type == "spike":
+                            basis = SpikeBasis(
+                                backcast_size=input_size,
+                                forecast_size=h,
+                                spike_hours=self.spike_hours,
+                                spike_kernel=self.spike_kernel,
+                                spike_radius=self.spike_radius,
+                                out_features=self.loss.outputsize_multiplier,
+                            )
+                            n_theta = basis.n_basis * self.loss.outputsize_multiplier
+                        else:
+                            raise ValueError(f"Block type {stack_type} not found!")
+
+                        nbeats_block = NBEATSBlock(
+                            input_size=input_size,
+                            h=h,
+                            futr_input_size=futr_input_size,
+                            hist_input_size=hist_input_size,
+                            stat_input_size=stat_input_size,
+                            n_theta=n_theta,
+                            mlp_units=mlp_units,
+                            basis=basis,
+                            dropout_prob=dropout_prob_theta,
+                            activation=activation,
+                        )
+                    block_list.append(nbeats_block)
+            return block_list
+
+    return NeuralForecast, SpikeAwareNBEATSx
+
+
 @dataclass
 class _FittedMemberState:
     nf: Any
@@ -92,6 +284,10 @@ class NBEATSxModel(ForecastModel):
     mlp_units: list[list[int]]
     futr_exog_list: list[str]
     hist_exog_list: list[str]
+    n_blocks: list[int] | None = None
+    spike_hours: list[int] = field(default_factory=list)
+    spike_kernel: str = "delta"
+    spike_radius: int = 0
     protected_exog_columns: list[str] = field(default_factory=default_nbeatsx_protected_exog_columns)
     target_transform: str = "identity"
     exog_scaler: str = "identity"
@@ -107,13 +303,17 @@ class NBEATSxModel(ForecastModel):
     _member_states: list[_FittedMemberState] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        try:
-            from neuralforecast import NeuralForecast  # type: ignore
-            from neuralforecast.models import NBEATSx  # type: ignore
-        except ImportError as exc:
-            raise ImportError("NBEATSxModel requires neuralforecast and torch to be installed.") from exc
-        self._neuralforecast_cls = NeuralForecast
-        self._nbeatsx_cls = NBEATSx
+        self._neuralforecast_cls, self._nbeatsx_cls = _build_spike_aware_nbeatsx_class()
+        if self.n_blocks is None:
+            self.n_blocks = [1] * len(self.stack_types)
+        if len(self.n_blocks) != len(self.stack_types):
+            raise ValueError("n_blocks must match stack_types length.")
+        if "spike" in self.stack_types and not self.spike_hours:
+            raise ValueError("stack_types includes 'spike' but spike_hours is empty.")
+        if self.spike_kernel not in {"delta", "triangle", "box"}:
+            raise ValueError(f"Unsupported spike_kernel: {self.spike_kernel}")
+        if self.spike_radius < 0:
+            raise ValueError("spike_radius must be >= 0.")
 
     def _price_columns(self, frame: pd.DataFrame) -> list[str]:
         return [column for column in frame.columns if column == "y" or column.startswith("price_lag_")]
@@ -169,6 +369,10 @@ class NBEATSxModel(ForecastModel):
             "mlp_units": self.mlp_units,
             "futr_exog_list": self.futr_exog_list,
             "hist_exog_list": self.hist_exog_list,
+            "n_blocks": self.n_blocks,
+            "spike_hours": self.spike_hours,
+            "spike_kernel": self.spike_kernel,
+            "spike_radius": self.spike_radius,
             "early_stop_patience_steps": self.early_stop_patience_steps,
             "val_check_steps": self.val_check_steps,
             "windows_batch_size": self.windows_batch_size,
@@ -271,6 +475,10 @@ class NBEATSxModel(ForecastModel):
             "mlp_units": self.mlp_units,
             "futr_exog_list": self.futr_exog_list,
             "hist_exog_list": self.hist_exog_list,
+            "n_blocks": self.n_blocks,
+            "spike_hours": self.spike_hours,
+            "spike_kernel": self.spike_kernel,
+            "spike_radius": self.spike_radius,
             "protected_exog_columns": self.protected_exog_columns,
             "target_transform": self.target_transform,
             "exog_scaler": self.exog_scaler,
