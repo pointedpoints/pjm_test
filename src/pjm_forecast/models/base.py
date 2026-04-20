@@ -16,7 +16,7 @@ class ForecastModel(ABC):
 
     @abstractmethod
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
-        """Return a dataframe with columns ds and y_pred."""
+        """Return a dataframe with columns ds, y_pred, and optional quantile."""
 
     @abstractmethod
     def save(self, path: Path) -> None:

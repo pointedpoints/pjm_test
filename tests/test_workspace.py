@@ -103,6 +103,12 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.prediction("seasonal_naive", "test", 7).name == "seasonal_naive_test_seed7.parquet"
     assert workspace.artifacts.prediction_chunk_dir("seasonal_naive", "test", 7).name == "seasonal_naive_test_seed7"
     assert workspace.artifacts.report_asset("test_metrics.csv") == (tmp_path / "run" / "artifacts" / "report" / "test_metrics.csv").resolve()
+    assert workspace.artifacts.quantile_diagnostics("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_quantile_diagnostics.csv"
+    ).resolve()
+    assert workspace.artifacts.scenario_diagnostics("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_scenario_diagnostics.csv"
+    ).resolve()
     assert workspace.artifacts.snapshot_manifest("nbeatsx_snapshot") == (
         tmp_path / "run" / "artifacts" / "models" / "nbeatsx_snapshot" / "manifest.json"
     ).resolve()
@@ -158,11 +164,17 @@ def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Pat
 
     assert workspace.artifacts.prediction("seasonal_naive", "test", 7).exists()
     assert workspace.artifacts.metrics("test").exists()
+    assert workspace.artifacts.quantile_diagnostics("test").exists()
+    assert workspace.artifacts.scenario_diagnostics("test").exists()
     assert workspace.artifacts.dm("test").exists()
     assert workspace.artifacts.hourly_mae_plot("test").exists()
     assert workspace.artifacts.high_vol_week_plot("test").exists()
     assert workspace.artifacts.report_asset("test_metrics.csv") in copied
+    assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in copied
+    assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in copied
     assert workspace.artifacts.report_asset("test_metrics.csv") in rebuilt
+    assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in rebuilt
+    assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in rebuilt
 
 
 def test_workspace_prepare_merges_optional_weather_features(tmp_path: Path, monkeypatch) -> None:
@@ -292,7 +304,8 @@ def test_workspace_predict_nbeatsx_snapshot_writes_prediction_file(tmp_path: Pat
 
     written_df = pd.read_parquet(written_path)
     assert written_path == output_path
-    assert list(written_df.columns) == ["ds", "y_pred"]
+    assert list(written_df.columns) == ["ds", "quantile", "y_pred"]
+    assert written_df["quantile"].isna().all()
     assert set(written_df["y_pred"]) == {42.0}
 
 

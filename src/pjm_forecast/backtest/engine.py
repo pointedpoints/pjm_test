@@ -7,6 +7,7 @@ import pandas as pd
 from pjm_forecast.config import ProjectConfig
 from pjm_forecast.model_io import validate_model_prediction_output
 from pjm_forecast.models.base import ForecastModel
+from pjm_forecast.prediction_contract import expected_prediction_rows, quantile_values
 from pjm_forecast.prepared_data import FeatureSchema, forecast_day_from_prediction_frame, prediction_metadata
 
 
@@ -62,9 +63,11 @@ def _validate_existing_chunk(
     seed: int,
     horizon: int,
 ) -> None:
-    schema.validate_prediction_frame(chunk_df, require_metadata=True)
-    if len(chunk_df) != horizon:
-        raise ValueError(f"Existing chunk for {forecast_day} has {len(chunk_df)} rows; expected {horizon}.")
+    expected_quantiles = schema.expected_prediction_quantiles(model_name)
+    schema.validate_prediction_frame(chunk_df, require_metadata=True, model_name=model_name)
+    expected_rows = expected_prediction_rows(horizon, expected_quantiles or quantile_values(chunk_df))
+    if len(chunk_df) != expected_rows:
+        raise ValueError(f"Existing chunk for {forecast_day} has {len(chunk_df)} rows; expected {expected_rows}.")
     if str(chunk_df["split"].iloc[0]) != split_name:
         raise ValueError(f"Existing chunk for {forecast_day} has split={chunk_df['split'].iloc[0]!r}, expected {split_name!r}.")
     if str(chunk_df["model"].iloc[0]) != model_name:
@@ -74,7 +77,7 @@ def _validate_existing_chunk(
     if forecast_day_from_prediction_frame(chunk_df) != forecast_day.normalize():
         raise ValueError(f"Existing chunk metadata does not match forecast day {forecast_day}.")
     expected_ds = list(pd.date_range(forecast_day, periods=horizon, freq="h"))
-    actual_ds = list(pd.to_datetime(chunk_df["ds"]))
+    actual_ds = list(pd.to_datetime(chunk_df["ds"]).drop_duplicates())
     if actual_ds != expected_ds:
         raise ValueError(f"Existing chunk timestamps do not match the expected horizon for {forecast_day}.")
 
@@ -188,14 +191,14 @@ def run_rolling_backtest(
             model.predict(history_df=history_df, future_df=future_df),
             future_df=future_df,
             model_name=model_name,
+            expected_quantiles=schema.expected_prediction_quantiles(model_name),
         )
         merged = future_df.loc[:, ["ds", "y"]].merge(prediction_df, on="ds", how="left")
         merged["model"] = model_name
         merged["split"] = split_name
         merged["seed"] = seed
-        merged["quantile"] = pd.NA
         merged["metadata"] = prediction_metadata(forecast_day)
-        schema.validate_prediction_frame(merged, require_metadata=True)
+        schema.validate_prediction_frame(merged, require_metadata=True, model_name=model_name)
         predictions.append(merged)
 
         if output_path is not None:
@@ -204,5 +207,5 @@ def run_rolling_backtest(
     result = pd.concat(predictions, axis=0, ignore_index=True)
     if output_path is not None:
         result = _finalize_output(output_path, forecast_days)
-    schema.validate_prediction_frame(result, require_metadata=True)
+    schema.validate_prediction_frame(result, require_metadata=True, model_name=model_name)
     return result

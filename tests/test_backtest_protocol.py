@@ -89,6 +89,28 @@ class MisalignedPredictionModel(ForecastModel):
         return cls()
 
 
+class QuantileResumeModel(ForecastModel):
+    def fit(self, train_df: pd.DataFrame) -> None:
+        del train_df
+
+    def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
+        del history_df
+        rows = []
+        for index, ds in enumerate(future_df["ds"]):
+            base = 10.0 + index
+            for quantile, offset in [(0.1, -1.0), (0.5, 0.0), (0.9, 1.0)]:
+                rows.append({"ds": ds, "quantile": quantile, "y_pred": base + offset})
+        return pd.DataFrame(rows)
+
+    def save(self, path: Path) -> None:
+        path.write_text("{}", encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path) -> "QuantileResumeModel":
+        del path
+        return cls()
+
+
 def test_backtest_generates_prediction_contract() -> None:
     config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
     config.raw["backtest"]["rolling_window_days"] = 8
@@ -278,4 +300,43 @@ def test_backtest_rejects_misaligned_model_prediction_output() -> None:
             model_builder=MisalignedPredictionModel,
             model_name="misaligned_prediction",
             seed=7,
+        )
+
+
+def test_backtest_rejects_resumed_chunk_with_missing_expected_quantile(tmp_path: Path) -> None:
+    config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
+    config.raw["backtest"]["rolling_window_days"] = 8
+    config.raw["models"]["quantile_resume"] = {
+        "loss_name": "mqloss",
+        "quantiles": [0.1, 0.5, 0.9],
+    }
+    feature_df = _feature_frame()
+    forecast_days = [pd.Timestamp("2017-01-09 00:00:00"), pd.Timestamp("2017-01-10 00:00:00")]
+    output_path = tmp_path / "quantile_resume_validation_seed7.parquet"
+
+    run_rolling_backtest(
+        config=config,
+        feature_df=feature_df,
+        split_name="validation",
+        forecast_days=[forecast_days[0]],
+        model_builder=QuantileResumeModel,
+        model_name="quantile_resume",
+        seed=7,
+        output_path=output_path,
+    )
+    chunk_path = output_path.parent / "chunks" / output_path.stem / "2017-01-09.parquet"
+    chunk_df = pd.read_parquet(chunk_path)
+    chunk_df = chunk_df.loc[~np.isclose(chunk_df["quantile"].astype(float), 0.9)].reset_index(drop=True)
+    chunk_df.to_parquet(chunk_path, index=False)
+
+    with pytest.raises(ValueError, match="quantile grid does not match expected quantiles"):
+        run_rolling_backtest(
+            config=config,
+            feature_df=feature_df,
+            split_name="validation",
+            forecast_days=forecast_days,
+            model_builder=QuantileResumeModel,
+            model_name="quantile_resume",
+            seed=7,
+            output_path=output_path,
         )

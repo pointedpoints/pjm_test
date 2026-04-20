@@ -13,6 +13,11 @@ NBEATSX_SCALER_STRATEGIES: dict[str, tuple[str, str]] = {
     "standard": ("identity", "zscore"),
     "robust": ("asinh_q95", "zscore"),
 }
+NBEATSX_LOSS_NAMES = {"mae", "mqloss", "huber_mqloss"}
+TUNING_METRICS = {"mae", "rmse", "smape", "pinball"}
+QUANTILE_CALIBRATION_METHODS = {"cqr", "cqr_asymmetric"}
+QUANTILE_CALIBRATION_GROUP_BY = {"hour"}
+SCENARIO_COPULA_FAMILIES = {"gaussian", "student_t"}
 
 
 @dataclass(slots=True)
@@ -100,6 +105,8 @@ class ProjectConfig:
                 return {str(item["left"]), str(item["right"])}
             if kind == "sum":
                 return {str(value) for value in item.get("inputs", [])}
+            if kind in {"days_to_next_holiday", "days_since_prev_holiday", "days_to_year_end", "year_end_window", "pre_holiday_window"}:
+                return set()
             if kind == "hour_indicator":
                 return set()
             return set()
@@ -146,6 +153,20 @@ class ProjectConfig:
         scaler_cfg = self.features.get("scaler", {})
         return [str(value) for value in scaler_cfg.get("strategy_candidates", [])]
 
+    def expected_prediction_quantiles(self, model_name: str) -> list[float]:
+        model_cfg = self.models.get(model_name)
+        if not isinstance(model_cfg, dict):
+            return []
+
+        loss_name = str(model_cfg.get("loss_name", "mae")).lower()
+        if loss_name != "mqloss":
+            return []
+
+        quantiles = model_cfg.get("quantiles", [])
+        if not quantiles:
+            return []
+        return sorted({float(value) for value in quantiles})
+
     def resolved_nbeatsx_scaler_strategy(self) -> str:
         model_cfg = self.models["nbeatsx"]
         pair = (
@@ -182,6 +203,29 @@ class ProjectConfig:
             raise ValueError("features.scaler.enabled=false requires NBEATSx to use the 'none' scaler strategy.")
 
         target_transform, exog_scaler = NBEATSX_SCALER_STRATEGIES[strategy_name]
+        loss_name = str(model_cfg.get("loss_name", "mae")).lower()
+        if loss_name not in NBEATSX_LOSS_NAMES:
+            raise ValueError(f"Unsupported NBEATSx loss_name={loss_name!r}.")
+        loss_delta = float(model_cfg.get("loss_delta", 1.0))
+        if loss_delta <= 0.0:
+            raise ValueError("models.nbeatsx.loss_delta must be > 0.")
+        quantiles = model_cfg.get("quantiles", [])
+        if loss_name in {"mqloss", "huber_mqloss"}:
+            if not quantiles:
+                raise ValueError("models.nbeatsx.quantiles must be configured when loss_name='mqloss'.")
+            normalized_quantiles = sorted({float(value) for value in quantiles})
+            if normalized_quantiles != [float(value) for value in quantiles]:
+                raise ValueError("models.nbeatsx.quantiles must be unique and sorted ascending.")
+            invalid_quantiles = [value for value in normalized_quantiles if value <= 0.0 or value >= 1.0]
+            if invalid_quantiles:
+                raise ValueError(f"models.nbeatsx.quantiles must be within (0, 1): {invalid_quantiles}")
+            if not any(abs(value - 0.5) <= 1e-9 for value in normalized_quantiles):
+                raise ValueError("models.nbeatsx.quantiles must include 0.5 for p50-compatible evaluation.")
+            model_cfg["quantiles"] = normalized_quantiles
+        else:
+            model_cfg["quantiles"] = []
+        model_cfg["loss_name"] = loss_name
+        model_cfg["loss_delta"] = loss_delta
         model_cfg["h"] = self.prediction_horizon
         model_cfg["freq"] = self.prediction_freq
         model_cfg["target_transform"] = target_transform
@@ -194,11 +238,16 @@ class ProjectConfig:
         invalid_candidates = [value for value in self.scaler_candidates() if value not in NBEATSX_SCALER_STRATEGIES]
         if invalid_candidates:
             raise ValueError(f"Unsupported features.scaler.strategy_candidates: {invalid_candidates}")
+        tuning_metric = str(self.tuning.get("metric", "mae")).lower()
+        if tuning_metric not in TUNING_METRICS:
+            raise ValueError(f"Unsupported tuning.metric={tuning_metric!r}.")
         if self.dataset_source_type not in {"epftoolbox", "pjm_official", "official_weather_ready"}:
             raise ValueError(f"Unsupported dataset.source_type={self.dataset_source_type!r}.")
         self.validate_derived_feature_contracts()
         if self.weather_enabled:
             self.validate_weather_contracts()
+        self.validate_quantile_postprocess_contracts()
+        self.validate_scenario_evaluation_contracts()
         if "nbeatsx" in self.models:
             self.nbeatsx_runtime_config()
 
@@ -245,6 +294,18 @@ class ProjectConfig:
                 missing = [value for value in inputs if value not in available_feature_names]
                 if missing:
                     raise ValueError(f"derived_features sum inputs are unavailable for {name!r}: {missing}")
+            elif kind == "days_to_next_holiday":
+                pass
+            elif kind == "days_since_prev_holiday":
+                pass
+            elif kind == "days_to_year_end":
+                pass
+            elif kind == "year_end_window":
+                pass
+            elif kind == "pre_holiday_window":
+                max_days = int(item.get("max_days", 0))
+                if max_days <= 0:
+                    raise ValueError(f"derived_features pre_holiday_window requires max_days >= 1 for {name!r}.")
             elif kind == "hour_indicator":
                 hour = int(item.get("hour", -1))
                 if hour < 0 or hour > 23:
@@ -296,6 +357,99 @@ class ProjectConfig:
                 f"missing: {missing_outputs}"
             )
 
+    def validate_quantile_postprocess_contracts(self) -> None:
+        postprocess = self.report.get("quantile_postprocess", {})
+        if not postprocess:
+            return
+        monotonic = postprocess.get("monotonic")
+        if monotonic is not None and not isinstance(monotonic, bool):
+            raise ValueError("report.quantile_postprocess.monotonic must be a boolean when configured.")
+        calibration = postprocess.get("calibration", {})
+        if not calibration:
+            return
+        enabled = calibration.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError("report.quantile_postprocess.calibration.enabled must be a boolean when configured.")
+        source_split = calibration.get("source_split", "validation")
+        if source_split not in {"validation"}:
+            raise ValueError("report.quantile_postprocess.calibration.source_split currently only supports 'validation'.")
+        method = calibration.get("method", "cqr")
+        if method not in QUANTILE_CALIBRATION_METHODS:
+            raise ValueError(f"Unsupported report.quantile_postprocess.calibration.method={method!r}.")
+        group_by = calibration.get("group_by")
+        if group_by is not None and group_by not in QUANTILE_CALIBRATION_GROUP_BY:
+            raise ValueError(
+                "report.quantile_postprocess.calibration.group_by must be one of "
+                f"{sorted(QUANTILE_CALIBRATION_GROUP_BY)} when configured."
+            )
+        min_group_size = calibration.get("min_group_size")
+        if min_group_size is not None and (not isinstance(min_group_size, int) or int(min_group_size) <= 0):
+            raise ValueError("report.quantile_postprocess.calibration.min_group_size must be a positive integer.")
+
+        interval_coverage_floors = calibration.get("interval_coverage_floors", {})
+        if interval_coverage_floors and not isinstance(interval_coverage_floors, dict):
+            raise ValueError("report.quantile_postprocess.calibration.interval_coverage_floors must be a mapping.")
+
+        for model_name in self.models:
+            quantiles = self.expected_prediction_quantiles(model_name)
+            if not quantiles:
+                continue
+            if not _supports_cqr_quantile_pairs(quantiles):
+                raise ValueError(
+                    "report.quantile_postprocess.calibration requires symmetric quantile pairs for "
+                    f"model {model_name!r}; received {quantiles}"
+                )
+            if not interval_coverage_floors:
+                continue
+            supported_pairs = {(lower, upper) for lower, upper in _quantile_pairs(quantiles)}
+            for key, value in interval_coverage_floors.items():
+                try:
+                    lower_text, upper_text = str(key).split("-", maxsplit=1)
+                    pair = (float(lower_text), float(upper_text))
+                except Exception as exc:
+                    raise ValueError(
+                        "report.quantile_postprocess.calibration.interval_coverage_floors keys must look like "
+                        "'0.10-0.90'."
+                    ) from exc
+                if pair not in supported_pairs:
+                    raise ValueError(
+                        "report.quantile_postprocess.calibration.interval_coverage_floors includes unsupported pair "
+                        f"{key!r} for model {model_name!r}."
+                    )
+                numeric_value = float(value)
+                if not 0.0 < numeric_value < 1.0:
+                    raise ValueError(
+                        "report.quantile_postprocess.calibration.interval_coverage_floors values must be in (0, 1)."
+                    )
+
+    def validate_scenario_evaluation_contracts(self) -> None:
+        scenario_cfg = self.report.get("scenario_evaluation", {})
+        if not scenario_cfg:
+            return
+        enabled = scenario_cfg.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError("report.scenario_evaluation.enabled must be a boolean when configured.")
+        source_split = scenario_cfg.get("source_split", "validation")
+        if source_split not in {"validation"}:
+            raise ValueError("report.scenario_evaluation.source_split currently only supports 'validation'.")
+        family = str(scenario_cfg.get("copula_family", "student_t"))
+        if family not in SCENARIO_COPULA_FAMILIES:
+            raise ValueError(f"Unsupported report.scenario_evaluation.copula_family={family!r}.")
+        n_samples = scenario_cfg.get("n_samples", 256)
+        if not isinstance(n_samples, int) or n_samples <= 0:
+            raise ValueError("report.scenario_evaluation.n_samples must be a positive integer.")
+        random_seed = scenario_cfg.get("random_seed", 7)
+        if not isinstance(random_seed, int):
+            raise ValueError("report.scenario_evaluation.random_seed must be an integer.")
+        dof_grid = scenario_cfg.get("dof_grid")
+        if dof_grid is not None:
+            if not isinstance(dof_grid, list) or not dof_grid:
+                raise ValueError("report.scenario_evaluation.dof_grid must be a non-empty list when configured.")
+            for value in dof_grid:
+                numeric_value = float(value)
+                if numeric_value <= 2.0:
+                    raise ValueError("report.scenario_evaluation.dof_grid values must be > 2.")
+
     def resolve_path(self, relative_path: str) -> Path:
         override = os.environ.get("PJM_PROJECT_ROOT_OVERRIDE") or self.project.get("root_override")
         base_path = Path(override).resolve() if override else self.path.parent.parent
@@ -309,3 +463,25 @@ def load_config(path: str | Path) -> ProjectConfig:
     config = ProjectConfig(raw=raw, path=config_path)
     config.validate_runtime_contracts()
     return config
+
+
+def _supports_cqr_quantile_pairs(quantiles: list[float]) -> bool:
+    normalized = sorted(float(value) for value in quantiles)
+    for quantile in normalized:
+        if quantile >= 0.5:
+            continue
+        if not any(abs(other - (1.0 - quantile)) <= 1e-9 for other in normalized):
+            return False
+    return True
+
+
+def _quantile_pairs(quantiles: list[float]) -> list[tuple[float, float]]:
+    normalized = sorted(float(value) for value in quantiles)
+    pairs: list[tuple[float, float]] = []
+    for quantile in normalized:
+        if quantile >= 0.5:
+            continue
+        partner = 1.0 - quantile
+        if any(abs(other - partner) <= 1e-9 for other in normalized):
+            pairs.append((quantile, partner))
+    return pairs

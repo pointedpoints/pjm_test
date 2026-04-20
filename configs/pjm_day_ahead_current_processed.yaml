@@ -38,7 +38,7 @@ features:
     - "heating_degree_18"
     - "cooling_degree_22"
     - "load_cooling_pressure"
-  price_lags: [24, 168]
+  price_lags: [24]
   lag_sources:
     - "zonal_load_forecast"
   source_lags: [24]
@@ -121,7 +121,7 @@ backtest:
 tuning:
   model_name: "nbeatsx"
   n_trials: 5
-  metric: "mae"
+  metric: "pinball"
   use_ensemble_in_tuning: false
   search_space:
     input_size: [168, 336, 504, 672]
@@ -146,12 +146,17 @@ models:
     scaler_type: "identity"
     target_transform: "asinh_q95"
     exog_scaler: "zscore"
+    loss_name: "huber_mqloss"
+    loss_delta: 0.75
+    quantiles: [0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.99]
     early_stop_patience_steps: 10
     val_check_steps: 50
     validation_size: 168
     windows_batch_size: 512
     ensemble_aggregation: "mean"
-    ensemble_members: []
+    ensemble_members:
+      - seed_offset: 0
+      - seed_offset: 11
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]
@@ -159,9 +164,28 @@ models:
       - [768, 768]
 
 report:
-  primary_metric: "mae"
-  auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
+  primary_metric: "pinball"
+  auxiliary_metrics: ["mae", "rmse", "smape", "hourly_mae", "dm"]
   include_high_volatility_week: true
+  quantile_postprocess:
+    monotonic: true
+    calibration:
+      enabled: true
+      source_split: "validation"
+      method: "cqr_asymmetric"
+      group_by: "hour"
+      min_group_size: 24
+      interval_coverage_floors:
+        "0.10-0.90": 0.76
+        "0.05-0.95": 0.86
+        "0.01-0.99": 0.95
+  scenario_evaluation:
+    enabled: true
+    source_split: "validation"
+    copula_family: "student_t"
+    dof_grid: [3.0, 5.0, 7.0, 10.0]
+    n_samples: 256
+    random_seed: 7
 
 retrieval:
   enabled: false

@@ -27,6 +27,28 @@ def _write_csv(tmp_path: Path, hours: int = 24 * 1200) -> Path:
     return csv_path
 
 
+def _build_panel(start: str, hours: int = 24 * 7) -> pd.DataFrame:
+    start_ts = pd.Timestamp(start)
+    rows = []
+    for offset in range(hours):
+        rows.append(
+            {
+                "unique_id": "PJM_COMED",
+                "ds": start_ts + pd.Timedelta(hours=offset),
+                "y": float(offset),
+                "system_load_forecast": float(10_000 + offset),
+                "zonal_load_forecast": float(2_000 + offset),
+                "weather_temp_mean": float(-5.0 + 0.1 * (offset % 24)),
+                "weather_temp_spread": 1.5,
+                "weather_apparent_temp_mean": float(-7.0 + 0.1 * (offset % 24)),
+                "weather_wind_speed_mean": 5.0,
+                "weather_cloud_cover_mean": 25.0,
+                "weather_precip_area_fraction": 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _write_temp_config(tmp_path: Path, mutate) -> Path:
     payload = yaml.safe_load(Path("configs/pjm_day_ahead_v1.yaml").read_text(encoding="utf-8"))
     mutate(payload)
@@ -102,6 +124,8 @@ def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals(
     assert "heating_degree_18" in contract.signal_futr_exog_columns
     assert "cooling_degree_22" in contract.signal_futr_exog_columns
     assert "load_cooling_pressure" in contract.signal_futr_exog_columns
+    assert "price_lag_24" in contract.hist_exog_columns
+    assert "price_lag_168" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_24" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_168" not in contract.hist_exog_columns
     assert contract.future_only_signal_columns() == [
@@ -252,3 +276,72 @@ def test_feature_schema_builds_hour_indicator_and_sum_features(tmp_path: Path) -
     assert prepared.feature_df.loc[7, "pressure_sum"] == 1.0
     assert prepared.feature_df.loc[19, "pressure_sum"] == 1.0
     assert prepared.feature_df.loc[8, "pressure_sum"] == 0.0
+
+
+def test_feature_schema_builds_pre_holiday_features() -> None:
+    config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
+    raw = yaml.safe_load(config.path.read_text(encoding="utf-8"))
+    if "days_to_next_holiday" not in raw["features"]["future_exog"]:
+        raw["features"]["future_exog"].append("days_to_next_holiday")
+    if "is_pre_holiday_window_3" not in raw["features"]["future_exog"]:
+        raw["features"]["future_exog"].append("is_pre_holiday_window_3")
+    if not any(item.get("name") == "days_to_next_holiday" for item in raw["features"].get("derived_features", [])):
+        raw["features"].setdefault("derived_features", []).append(
+            {"kind": "days_to_next_holiday", "name": "days_to_next_holiday"}
+        )
+    if not any(item.get("name") == "is_pre_holiday_window_3" for item in raw["features"].get("derived_features", [])):
+        raw["features"].setdefault("derived_features", []).append(
+            {"kind": "pre_holiday_window", "max_days": 3, "name": "is_pre_holiday_window_3"}
+        )
+    temp_config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
+    temp_config = type(temp_config)(raw=raw, path=config.path)
+    temp_config.validate_runtime_contracts()
+
+    schema = FeatureSchema(temp_config)
+    panel_df = _build_panel("2025-12-22 00:00:00", hours=24 * 5)
+    feature_df = schema.build_feature_frame(panel_df)
+
+    christmas_eve = feature_df[feature_df["ds"] == pd.Timestamp("2025-12-24 12:00:00")].iloc[0]
+    christmas = feature_df[feature_df["ds"] == pd.Timestamp("2025-12-25 12:00:00")].iloc[0]
+    dec_22 = feature_df[feature_df["ds"] == pd.Timestamp("2025-12-22 12:00:00")].iloc[0]
+
+    assert christmas_eve["days_to_next_holiday"] == 1.0
+    assert christmas_eve["is_pre_holiday_window_3"] == 1.0
+    assert christmas["days_to_next_holiday"] == 0.0
+    assert christmas["is_pre_holiday_window_3"] == 0.0
+    assert dec_22["days_to_next_holiday"] == 3.0
+    assert dec_22["is_pre_holiday_window_3"] == 1.0
+
+
+def test_feature_schema_builds_year_end_semantic_calendar_features() -> None:
+    config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
+    raw = yaml.safe_load(config.path.read_text(encoding="utf-8"))
+    for feature_name in ["days_since_prev_holiday", "days_to_year_end", "is_year_end_window"]:
+        if feature_name not in raw["features"]["future_exog"]:
+            raw["features"]["future_exog"].append(feature_name)
+    additions = [
+        {"kind": "days_since_prev_holiday", "name": "days_since_prev_holiday"},
+        {"kind": "days_to_year_end", "name": "days_to_year_end"},
+        {"kind": "year_end_window", "name": "is_year_end_window"},
+    ]
+    for item in additions:
+        if not any(existing.get("name") == item["name"] for existing in raw["features"].get("derived_features", [])):
+            raw["features"].setdefault("derived_features", []).append(item)
+    temp_config = type(config)(raw=raw, path=config.path)
+    temp_config.validate_runtime_contracts()
+
+    schema = FeatureSchema(temp_config)
+    panel_df = _build_panel("2025-12-30 00:00:00", hours=24 * 5)
+    feature_df = schema.build_feature_frame(panel_df)
+
+    dec_30 = feature_df[feature_df["ds"] == pd.Timestamp("2025-12-30 12:00:00")].iloc[0]
+    jan_02 = feature_df[feature_df["ds"] == pd.Timestamp("2026-01-02 12:00:00")].iloc[0]
+    jan_03 = feature_df[feature_df["ds"] == pd.Timestamp("2026-01-03 12:00:00")].iloc[0]
+
+    assert dec_30["days_since_prev_holiday"] == 5.0
+    assert dec_30["days_to_year_end"] == 1.0
+    assert dec_30["is_year_end_window"] == 1.0
+    assert jan_02["days_since_prev_holiday"] == 1.0
+    assert jan_02["days_to_year_end"] == 363.0
+    assert jan_02["is_year_end_window"] == 1.0
+    assert jan_03["is_year_end_window"] == 1.0

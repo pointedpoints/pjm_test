@@ -16,7 +16,7 @@ from .base import ForecastModel
 def _build_spike_aware_nbeatsx_class() -> tuple[type[Any], type[Any]]:
     try:
         from neuralforecast import NeuralForecast  # type: ignore
-        from neuralforecast.losses.pytorch import MAE  # type: ignore
+        from neuralforecast.losses.pytorch import HuberMQLoss, MAE, MQLoss  # type: ignore
         from neuralforecast.models.nbeatsx import (  # type: ignore
             NBEATSBlock,
             ExogenousBasis,
@@ -291,6 +291,9 @@ class NBEATSxModel(ForecastModel):
     protected_exog_columns: list[str] = field(default_factory=default_nbeatsx_protected_exog_columns)
     target_transform: str = "identity"
     exog_scaler: str = "identity"
+    loss_name: str = "mae"
+    loss_delta: float = 1.0
+    quantiles: list[float] = field(default_factory=list)
     early_stop_patience_steps: int = -1
     val_check_steps: int = 100
     validation_size: int = 168
@@ -314,6 +317,21 @@ class NBEATSxModel(ForecastModel):
             raise ValueError(f"Unsupported spike_kernel: {self.spike_kernel}")
         if self.spike_radius < 0:
             raise ValueError("spike_radius must be >= 0.")
+        self.loss_name = str(self.loss_name).lower()
+        if self.loss_name not in {"mae", "mqloss", "huber_mqloss"}:
+            raise ValueError(f"Unsupported loss_name: {self.loss_name}")
+        if self.loss_delta <= 0.0:
+            raise ValueError("loss_delta must be > 0.")
+        if self.loss_name in {"mqloss", "huber_mqloss"}:
+            if not self.quantiles:
+                raise ValueError("quantiles are required when loss_name='mqloss'.")
+            self.quantiles = sorted(float(value) for value in self.quantiles)
+            if any(value <= 0.0 or value >= 1.0 for value in self.quantiles):
+                raise ValueError("quantiles must be within (0, 1).")
+            if not any(abs(value - 0.5) <= 1e-9 for value in self.quantiles):
+                raise ValueError("quantiles must include 0.5 for p50-compatible evaluation.")
+        else:
+            self.quantiles = []
 
     def _price_columns(self, frame: pd.DataFrame) -> list[str]:
         return [column for column in frame.columns if column == "y" or column.startswith("price_lag_")]
@@ -381,6 +399,50 @@ class NBEATSxModel(ForecastModel):
             "enable_progress_bar": False,
         }
 
+    def _build_loss(self) -> Any:
+        from neuralforecast.losses.pytorch import HuberMQLoss, MAE, MQLoss  # type: ignore
+
+        if self.loss_name == "mqloss":
+            return MQLoss(quantiles=list(self.quantiles))
+        if self.loss_name == "huber_mqloss":
+            return HuberMQLoss(quantiles=list(self.quantiles), delta=float(self.loss_delta))
+        return MAE()
+
+    def _build_valid_loss(self) -> Any | None:
+        if self.loss_name not in {"mqloss", "huber_mqloss"}:
+            return None
+        return self._build_loss()
+
+    def _quantile_output_suffixes(self) -> dict[str, float]:
+        suffix_map: dict[str, float] = {}
+        for quantile in self.quantiles:
+            if quantile < 0.5:
+                suffix = f"-lo-{np.round(100 - 200 * quantile, 2)}"
+            elif quantile > 0.5:
+                suffix = f"-hi-{np.round(100 - 200 * (1 - quantile), 2)}"
+            else:
+                suffix = "-median"
+            suffix_map[suffix] = float(quantile)
+        return suffix_map
+
+    def _normalize_member_prediction(self, prediction_df: pd.DataFrame) -> pd.DataFrame:
+        output_columns = [column for column in prediction_df.columns if column not in {"unique_id", "ds"}]
+        if self.loss_name not in {"mqloss", "huber_mqloss"}:
+            if len(output_columns) != 1:
+                raise ValueError(f"Expected exactly one point forecast column, received: {output_columns}")
+            return prediction_df.rename(columns={output_columns[0]: "y_pred"}).loc[:, ["ds", "y_pred"]]
+
+        suffix_map = self._quantile_output_suffixes()
+        quantile_frames = []
+        for column in output_columns:
+            quantile = next((value for suffix, value in suffix_map.items() if column.endswith(suffix)), None)
+            if quantile is None:
+                raise ValueError(f"Unable to map NeuralForecast output column {column!r} to a configured quantile.")
+            quantile_frame = prediction_df.loc[:, ["ds", column]].rename(columns={column: "y_pred"}).copy()
+            quantile_frame["quantile"] = quantile
+            quantile_frames.append(quantile_frame)
+        return pd.concat(quantile_frames, axis=0, ignore_index=True).sort_values(["ds", "quantile"]).reset_index(drop=True)
+
     def _resolved_member_kwargs(self) -> list[dict[str, Any]]:
         base_kwargs = self._base_model_kwargs()
         if not self.ensemble_members:
@@ -402,7 +464,11 @@ class NBEATSxModel(ForecastModel):
         self._member_states = []
         for member_kwargs in self._resolved_member_kwargs():
             transformed_train_df, target_scaler, exog_scaler = self._transform_frame(train_df, fit=True)
-            model = self._nbeatsx_cls(**member_kwargs)
+            model = self._nbeatsx_cls(
+                **member_kwargs,
+                loss=self._build_loss(),
+                valid_loss=self._build_valid_loss(),
+            )
             nf = self._neuralforecast_cls(models=[model], freq=self.freq)
             fit_kwargs = {"df": transformed_train_df}
             if self.early_stop_patience_steps > 0:
@@ -441,8 +507,7 @@ class NBEATSxModel(ForecastModel):
                 raise ValueError("Missing future exogenous values after aligning to NeuralForecast future grid.")
 
             prediction_df = member_state.nf.predict(df=transformed_history_df, futr_df=futr_df)
-            model_column = [column for column in prediction_df.columns if column not in {"unique_id", "ds"}][0]
-            prediction_df = prediction_df.rename(columns={model_column: "y_pred"}).loc[:, ["ds", "y_pred"]]
+            prediction_df = self._normalize_member_prediction(prediction_df)
             if member_state.target_scaler is not None and self.target_transform == "asinh_q95":
                 prediction_df["y_pred"] = member_state.target_scaler.inverse_transform_array(
                     prediction_df["y_pred"].to_numpy()
@@ -450,15 +515,17 @@ class NBEATSxModel(ForecastModel):
             member_predictions.append(prediction_df.rename(columns={"y_pred": f"y_pred_{len(member_predictions)}"}))
 
         result = member_predictions[0]
+        merge_keys = ["ds", "quantile"] if "quantile" in result.columns else ["ds"]
         for member_prediction in member_predictions[1:]:
-            result = result.merge(member_prediction, on="ds", how="inner")
+            result = result.merge(member_prediction, on=merge_keys, how="inner")
         prediction_columns = [column for column in result.columns if column.startswith("y_pred_")]
         predictions_array = result[prediction_columns].to_numpy(dtype=float)
         if self.ensemble_aggregation == "median":
             result["y_pred"] = np.median(predictions_array, axis=1)
         else:
             result["y_pred"] = predictions_array.mean(axis=1)
-        return result.loc[:, ["ds", "y_pred"]]
+        output_columns = ["ds", "y_pred"] if "quantile" not in result.columns else ["ds", "quantile", "y_pred"]
+        return result.loc[:, output_columns]
 
     def save(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -482,6 +549,9 @@ class NBEATSxModel(ForecastModel):
             "protected_exog_columns": self.protected_exog_columns,
             "target_transform": self.target_transform,
             "exog_scaler": self.exog_scaler,
+            "loss_name": self.loss_name,
+            "loss_delta": self.loss_delta,
+            "quantiles": self.quantiles,
             "early_stop_patience_steps": self.early_stop_patience_steps,
             "val_check_steps": self.val_check_steps,
             "validation_size": self.validation_size,

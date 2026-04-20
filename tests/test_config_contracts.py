@@ -36,6 +36,32 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
         assert config.retrieval_output_model_name == "nbeatsx_rag"
 
 
+def test_current_processed_config_uses_quantile_nbeatsx_contract() -> None:
+    config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
+    runtime_cfg = config.nbeatsx_runtime_config()
+
+    assert runtime_cfg["loss_name"] == "huber_mqloss"
+    assert runtime_cfg["loss_delta"] == 0.75
+    assert runtime_cfg["quantiles"][0] == 0.01
+    assert runtime_cfg["quantiles"][-1] == 0.99
+    assert 0.5 in runtime_cfg["quantiles"]
+    assert runtime_cfg["ensemble_members"] == [{"seed_offset": 0}, {"seed_offset": 11}]
+    assert config.tuning["metric"] == "pinball"
+    assert config.features["price_lags"] == [24]
+    postprocess_cfg = config.report["quantile_postprocess"]
+    assert postprocess_cfg["monotonic"] is True
+    assert postprocess_cfg["calibration"]["enabled"] is True
+    assert postprocess_cfg["calibration"]["source_split"] == "validation"
+    assert postprocess_cfg["calibration"]["method"] == "cqr_asymmetric"
+    assert postprocess_cfg["calibration"]["group_by"] == "hour"
+    assert postprocess_cfg["calibration"]["min_group_size"] == 24
+    assert postprocess_cfg["calibration"]["interval_coverage_floors"]["0.01-0.99"] == 0.95
+    scenario_cfg = config.report["scenario_evaluation"]
+    assert scenario_cfg["enabled"] is True
+    assert scenario_cfg["copula_family"] == "student_t"
+    assert scenario_cfg["n_samples"] == 256
+
+
 def test_load_config_rejects_nbeatsx_horizon_drift(tmp_path: Path) -> None:
     config_path = _write_temp_config(tmp_path, lambda payload: payload["models"]["nbeatsx"].__setitem__("h", 12))
     with pytest.raises(ValueError, match="must match backtest.horizon"):
@@ -116,4 +142,161 @@ def test_load_config_rejects_invalid_hour_indicator(tmp_path: Path) -> None:
         ),
     )
     with pytest.raises(ValueError, match="hour_indicator"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_invalid_pre_holiday_window(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [{"kind": "pre_holiday_window", "max_days": 0, "name": "bad_pre_holiday"}],
+        ),
+    )
+    with pytest.raises(ValueError, match="max_days >= 1"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_unsupported_quantile_calibration_method(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "calibration": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "method": "unsupported_method",
+                    },
+                },
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="Unsupported report.quantile_postprocess.calibration.method"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_quantile_contract_without_median(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.9]),
+        ),
+    )
+    with pytest.raises(ValueError, match="include 0.5"):
+        load_config(config_path)
+
+
+def test_load_config_allows_huber_mqloss_for_quantile_training(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "huber_mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("loss_delta", 0.75),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+        ),
+    )
+    config = load_config(config_path)
+    assert config.nbeatsx_runtime_config()["loss_name"] == "huber_mqloss"
+    assert config.nbeatsx_runtime_config()["loss_delta"] == 0.75
+
+
+def test_load_config_rejects_cqr_quantiles_without_symmetric_pairs(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "calibration": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "method": "cqr",
+                    },
+                },
+            ),
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.2, 0.5, 0.9]),
+        ),
+    )
+    with pytest.raises(ValueError, match="requires symmetric quantile pairs"):
+        load_config(config_path)
+
+
+def test_load_config_allows_asymmetric_cqr_with_hour_grouping_and_coverage_floors(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "calibration": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "method": "cqr_asymmetric",
+                        "group_by": "hour",
+                        "min_group_size": 24,
+                        "interval_coverage_floors": {"0.10-0.90": 0.76},
+                    },
+                },
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    calibration = config.report["quantile_postprocess"]["calibration"]
+    assert calibration["method"] == "cqr_asymmetric"
+    assert calibration["group_by"] == "hour"
+
+
+def test_load_config_rejects_invalid_quantile_coverage_floor_key(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "calibration": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "method": "cqr_asymmetric",
+                        "interval_coverage_floors": {"0.20-0.80": 0.76},
+                    },
+                },
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="unsupported pair"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_unsupported_scenario_copula_family(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "scenario_evaluation",
+                {
+                    "enabled": True,
+                    "source_split": "validation",
+                    "copula_family": "vine",
+                },
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="Unsupported report.scenario_evaluation.copula_family"):
         load_config(config_path)

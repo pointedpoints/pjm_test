@@ -11,6 +11,8 @@ from .metrics import compute_hourly_mae
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from pjm_forecast.prediction_contract import point_prediction_view
+
 
 def plot_hourly_mae(predictions_by_model: dict[str, pd.DataFrame], output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -28,7 +30,7 @@ def plot_hourly_mae(predictions_by_model: dict[str, pd.DataFrame], output_path: 
 
 
 def plot_high_volatility_week(predictions: pd.DataFrame, output_path: Path) -> None:
-    frame = predictions.copy()
+    frame = point_prediction_view(predictions)
     frame["day"] = pd.to_datetime(frame["ds"]).dt.normalize()
     daily_vol = frame.groupby("day")["y"].agg(lambda values: float(values.max() - values.min()))
     target_day = daily_vol.sort_values(ascending=False).index[0]
