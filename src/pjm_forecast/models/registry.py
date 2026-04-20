@@ -7,6 +7,7 @@ from pjm_forecast.config import ProjectConfig
 from pjm_forecast.prepared_data import FeatureSchema
 
 from .epftoolbox_wrappers import DNNModel, LEARModel
+from .nhits import NHITSModel
 from .nbeatsx import NBEATSxModel
 from .seasonal_naive import SeasonalNaiveModel
 
@@ -18,7 +19,13 @@ def build_model(
     hyperparameter_dir: Path | None = None,
     disable_ensemble: bool = False,
 ):
-    model_cfg = deepcopy(config.models[model_name] if model_name != "nbeatsx" else config.nbeatsx_runtime_config())
+    model_type = deepcopy(config.models[model_name]).get("type")
+    if model_type == "nbeatsx":
+        model_cfg = config.runtime_model_config(model_name)
+    elif model_type == "nhits":
+        model_cfg = config.runtime_model_config(model_name)
+    else:
+        model_cfg = deepcopy(config.models[model_name])
     model_type = model_cfg.pop("type")
     schema = FeatureSchema(config)
 
@@ -50,4 +57,14 @@ def build_model(
         if disable_ensemble:
             model_cfg["ensemble_members"] = []
         return NBEATSxModel(**model_cfg)
+    if model_type == "nhits":
+        contract = schema.nbeatsx_exogenous_contract()
+        if seed is not None:
+            model_cfg["random_seed"] = seed
+        model_cfg["futr_exog_list"] = contract.futr_exog_columns
+        model_cfg["hist_exog_list"] = contract.hist_exog_columns
+        model_cfg["protected_exog_columns"] = contract.protected_exog_columns
+        if disable_ensemble:
+            model_cfg["ensemble_members"] = []
+        return NHITSModel(**model_cfg)
     raise ValueError(f"Unsupported model type: {model_type}")

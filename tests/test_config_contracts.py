@@ -27,7 +27,7 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
         assert config.target_column == "y"
         assert config.prediction_horizon == 24
         assert config.prediction_freq == "h"
-        assert config.resolved_nbeatsx_scaler_strategy() == "robust"
+        assert config.resolved_neuralforecast_scaler_strategy("nbeatsx") == "robust"
         assert runtime_cfg["h"] == config.prediction_horizon
         assert runtime_cfg["freq"] == config.prediction_freq
         assert runtime_cfg["target_transform"] == "asinh_q95"
@@ -203,6 +203,63 @@ def test_load_config_allows_huber_mqloss_for_quantile_training(tmp_path: Path) -
     config = load_config(config_path)
     assert config.nbeatsx_runtime_config()["loss_name"] == "huber_mqloss"
     assert config.nbeatsx_runtime_config()["loss_delta"] == 0.75
+
+
+def test_load_config_allows_quantile_weights_for_neuralforecast_models(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "huber_mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("loss_delta", 0.75),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["models"]["nbeatsx"].__setitem__("quantile_weights", [1.0, 1.0, 3.0]),
+        ),
+    )
+    config = load_config(config_path)
+    assert config.nbeatsx_runtime_config()["quantile_weights"] == [1.0, 1.0, 3.0]
+
+
+def test_load_config_rejects_invalid_quantile_weights_length(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["models"]["nbeatsx"].__setitem__("quantile_weights", [1.0, 3.0]),
+        ),
+    )
+    with pytest.raises(ValueError, match="quantile_weights"):
+        load_config(config_path)
+
+
+def test_runtime_model_config_supports_named_nhits_models(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["models"].__setitem__(
+            "nhits_quantile",
+            {
+                "type": "nhits",
+                "h": 24,
+                "input_size": 336,
+                "max_steps": 10,
+                "learning_rate": 0.001,
+                "batch_size": 16,
+                "dropout_prob_theta": 0.0,
+                "scaler_type": "identity",
+                "stack_types": ["identity", "identity", "identity"],
+                "mlp_units": [[256, 256], [256, 256], [256, 256]],
+                "loss_name": "huber_mqloss",
+                "loss_delta": 0.75,
+                "quantiles": [0.1, 0.5, 0.9],
+                "quantile_weights": [1.0, 1.0, 3.0],
+            },
+        ),
+    )
+    config = load_config(config_path)
+    runtime_cfg = config.runtime_model_config("nhits_quantile")
+    assert runtime_cfg["type"] == "nhits"
+    assert runtime_cfg["loss_name"] == "huber_mqloss"
+    assert runtime_cfg["quantile_weights"] == [1.0, 1.0, 3.0]
 
 
 def test_load_config_rejects_cqr_quantiles_without_symmetric_pairs(tmp_path: Path) -> None:

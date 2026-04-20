@@ -6,9 +6,11 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from pjm_forecast.config import load_config
 from pjm_forecast.models.epftoolbox_wrappers import _dnn_trials_filename
+from pjm_forecast.models.nhits import NHITSModel
 from pjm_forecast.models.nbeatsx import AsinhQuantileScaler, NBEATSxModel, ZScoreScaler
 from pjm_forecast.models.registry import build_model
 from pjm_forecast.prepared_data import FeatureSchema
@@ -112,6 +114,32 @@ def test_build_model_can_disable_nbeatsx_ensemble() -> None:
     assert default_model.protected_exog_columns == schema.nbeatsx_protected_exog_columns()
 
 
+def test_build_model_supports_named_nhits_config(tmp_path: Path) -> None:
+    payload = yaml.safe_load(Path("configs/pjm_day_ahead_current_processed.yaml").read_text(encoding="utf-8"))
+    payload["models"]["nhits_quantile"] = {
+        "type": "nhits",
+        "h": 24,
+        "input_size": 336,
+        "max_steps": 10,
+        "learning_rate": 0.001,
+        "batch_size": 16,
+        "dropout_prob_theta": 0.0,
+        "scaler_type": "identity",
+        "stack_types": ["identity", "identity", "identity"],
+        "mlp_units": [[256, 256], [256, 256], [256, 256]],
+        "loss_name": "huber_mqloss",
+        "loss_delta": 0.75,
+        "quantiles": [0.01, 0.05, 0.1, 0.5, 0.9, 0.95, 0.99],
+        "quantile_weights": [1.0, 1.5, 2.0, 1.0, 3.0, 4.0, 5.0],
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    config = load_config(config_path)
+    model = build_model(config, "nhits_quantile", seed=7)
+    assert isinstance(model, NHITSModel)
+    assert model.quantile_weights == [1.0, 1.5, 2.0, 1.0, 3.0, 4.0, 5.0]
+
+
 def test_nbeatsx_accepts_huber_mqloss_configuration() -> None:
     model = NBEATSxModel(
         h=24,
@@ -133,6 +161,28 @@ def test_nbeatsx_accepts_huber_mqloss_configuration() -> None:
     assert model.loss_name == "huber_mqloss"
     assert model.loss_delta == 0.75
     assert model.quantiles == [0.1, 0.5, 0.9]
+
+
+def test_nbeatsx_accepts_quantile_weights_configuration() -> None:
+    model = NBEATSxModel(
+        h=24,
+        freq="h",
+        input_size=336,
+        max_steps=10,
+        learning_rate=0.001,
+        batch_size=16,
+        dropout_prob_theta=0.0,
+        scaler_type="identity",
+        stack_types=["trend", "seasonality", "identity"],
+        mlp_units=[[256, 256], [256, 256], [256, 256]],
+        futr_exog_list=["zonal_load_forecast"],
+        hist_exog_list=["price_lag_24"],
+        loss_name="huber_mqloss",
+        loss_delta=0.75,
+        quantiles=[0.1, 0.5, 0.9],
+        quantile_weights=[1.0, 1.0, 3.0],
+    )
+    assert model.quantile_weights == [1.0, 1.0, 3.0]
 
 
 def test_nbeatsx_rejects_non_positive_huber_delta() -> None:
@@ -192,6 +242,30 @@ def test_nbeatsx_snapshot_metadata_round_trip(tmp_path: Path) -> None:
     assert loaded.loss_name == "huber_mqloss"
     assert loaded.loss_delta == 0.5
     assert loaded.ensemble_members == [{"seed_offset": 0}]
+
+
+def test_nhits_accepts_quantile_configuration() -> None:
+    model = NHITSModel(
+        h=24,
+        freq="h",
+        input_size=336,
+        max_steps=10,
+        learning_rate=0.001,
+        batch_size=16,
+        dropout_prob_theta=0.0,
+        scaler_type="identity",
+        stack_types=["identity", "identity", "identity"],
+        mlp_units=[[256, 256], [256, 256], [256, 256]],
+        futr_exog_list=["zonal_load_forecast"],
+        hist_exog_list=["price_lag_24"],
+        loss_name="huber_mqloss",
+        loss_delta=0.75,
+        quantiles=[0.1, 0.5, 0.9],
+        quantile_weights=[1.0, 1.0, 3.0],
+    )
+    assert model.loss_name == "huber_mqloss"
+    assert model.quantiles == [0.1, 0.5, 0.9]
+    assert model.quantile_weights == [1.0, 1.0, 3.0]
 
 
 def test_nbeatsx_spike_stack_requires_spike_hours() -> None:

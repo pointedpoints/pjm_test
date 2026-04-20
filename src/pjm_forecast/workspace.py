@@ -486,9 +486,14 @@ class Workspace:
         forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=split)
 
         for model_name in self.config.backtest["benchmark_models"]:
-            if model_name == "nbeatsx":
+            model_type = str(self.config.models[model_name].get("type", "")).lower()
+            if model_type in {"nbeatsx", "nhits"}:
                 self.schema().validate_nbeatsx_feature_frame(feature_df)
-            seeds = self.config.project["random_seeds"] if model_name == "nbeatsx" else [self.config.project["benchmark_seed"]]
+            seeds = (
+                self.config.project["random_seeds"]
+                if model_type in {"nbeatsx", "nhits"}
+                else [self.config.project["benchmark_seed"]]
+            )
             for seed in seeds:
                 output_path = self.artifacts.prediction(model_name, split, seed)
                 if output_path.exists():

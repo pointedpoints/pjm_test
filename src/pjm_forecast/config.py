@@ -13,7 +13,8 @@ NBEATSX_SCALER_STRATEGIES: dict[str, tuple[str, str]] = {
     "standard": ("identity", "zscore"),
     "robust": ("asinh_q95", "zscore"),
 }
-NBEATSX_LOSS_NAMES = {"mae", "mqloss", "huber_mqloss"}
+NEURALFORECAST_LOSS_NAMES = {"mae", "mqloss", "huber_mqloss"}
+NEURALFORECAST_MODEL_TYPES = {"nbeatsx", "nhits"}
 TUNING_METRICS = {"mae", "rmse", "smape", "pinball"}
 QUANTILE_CALIBRATION_METHODS = {"cqr", "cqr_asymmetric"}
 QUANTILE_CALIBRATION_GROUP_BY = {"hour"}
@@ -159,7 +160,7 @@ class ProjectConfig:
             return []
 
         loss_name = str(model_cfg.get("loss_name", "mae")).lower()
-        if loss_name != "mqloss":
+        if loss_name not in {"mqloss", "huber_mqloss"}:
             return []
 
         quantiles = model_cfg.get("quantiles", [])
@@ -167,8 +168,8 @@ class ProjectConfig:
             return []
         return sorted({float(value) for value in quantiles})
 
-    def resolved_nbeatsx_scaler_strategy(self) -> str:
-        model_cfg = self.models["nbeatsx"]
+    def resolved_neuralforecast_scaler_strategy(self, model_name: str) -> str:
+        model_cfg = self.models[model_name]
         pair = (
             str(model_cfg.get("target_transform", "identity")),
             str(model_cfg.get("exog_scaler", "identity")),
@@ -176,54 +177,71 @@ class ProjectConfig:
         for strategy_name, strategy_pair in NBEATSX_SCALER_STRATEGIES.items():
             if pair == strategy_pair:
                 return strategy_name
-        raise ValueError(f"Unsupported NBEATSx scaler contract: target_transform={pair[0]!r}, exog_scaler={pair[1]!r}.")
+        raise ValueError(
+            f"Unsupported {model_name} scaler contract: target_transform={pair[0]!r}, exog_scaler={pair[1]!r}."
+        )
 
-    def nbeatsx_runtime_config(self) -> dict[str, Any]:
-        model_cfg = dict(self.models["nbeatsx"])
+    def runtime_model_config(self, model_name: str) -> dict[str, Any]:
+        model_cfg = dict(self.models[model_name])
+        model_type = str(model_cfg.get("type", "")).lower()
+        if model_type not in NEURALFORECAST_MODEL_TYPES:
+            return model_cfg
+
         configured_h = int(model_cfg.get("h", self.prediction_horizon))
         if configured_h != self.prediction_horizon:
             raise ValueError(
-                f"models.nbeatsx.h={configured_h} must match backtest.horizon={self.prediction_horizon} in v1."
+                f"models.{model_name}.h={configured_h} must match backtest.horizon={self.prediction_horizon} in v1."
             )
 
         configured_freq = str(model_cfg.get("freq", self.prediction_freq))
         if configured_freq != self.prediction_freq:
             raise ValueError(
-                f"models.nbeatsx.freq={configured_freq!r} must match backtest.freq={self.prediction_freq!r} in v1."
+                f"models.{model_name}.freq={configured_freq!r} must match backtest.freq={self.prediction_freq!r} in v1."
             )
 
-        strategy_name = self.resolved_nbeatsx_scaler_strategy()
+        strategy_name = self.resolved_neuralforecast_scaler_strategy(model_name)
         strategy_candidates = self.scaler_candidates()
         scaler_enabled = bool(self.features.get("scaler", {}).get("enabled", False))
         if scaler_enabled and strategy_name not in strategy_candidates:
             raise ValueError(
-                f"NBEATSx scaler strategy {strategy_name!r} must be listed in features.scaler.strategy_candidates."
+                f"{model_name} scaler strategy {strategy_name!r} must be listed in features.scaler.strategy_candidates."
             )
         if not scaler_enabled and strategy_name != "none":
-            raise ValueError("features.scaler.enabled=false requires NBEATSx to use the 'none' scaler strategy.")
+            raise ValueError(f"features.scaler.enabled=false requires {model_name} to use the 'none' scaler strategy.")
 
         target_transform, exog_scaler = NBEATSX_SCALER_STRATEGIES[strategy_name]
         loss_name = str(model_cfg.get("loss_name", "mae")).lower()
-        if loss_name not in NBEATSX_LOSS_NAMES:
-            raise ValueError(f"Unsupported NBEATSx loss_name={loss_name!r}.")
+        if loss_name not in NEURALFORECAST_LOSS_NAMES:
+            raise ValueError(f"Unsupported {model_name} loss_name={loss_name!r}.")
         loss_delta = float(model_cfg.get("loss_delta", 1.0))
         if loss_delta <= 0.0:
-            raise ValueError("models.nbeatsx.loss_delta must be > 0.")
+            raise ValueError(f"models.{model_name}.loss_delta must be > 0.")
         quantiles = model_cfg.get("quantiles", [])
         if loss_name in {"mqloss", "huber_mqloss"}:
             if not quantiles:
-                raise ValueError("models.nbeatsx.quantiles must be configured when loss_name='mqloss'.")
+                raise ValueError(f"models.{model_name}.quantiles must be configured when loss_name is quantile-based.")
             normalized_quantiles = sorted({float(value) for value in quantiles})
             if normalized_quantiles != [float(value) for value in quantiles]:
-                raise ValueError("models.nbeatsx.quantiles must be unique and sorted ascending.")
+                raise ValueError(f"models.{model_name}.quantiles must be unique and sorted ascending.")
             invalid_quantiles = [value for value in normalized_quantiles if value <= 0.0 or value >= 1.0]
             if invalid_quantiles:
-                raise ValueError(f"models.nbeatsx.quantiles must be within (0, 1): {invalid_quantiles}")
+                raise ValueError(f"models.{model_name}.quantiles must be within (0, 1): {invalid_quantiles}")
             if not any(abs(value - 0.5) <= 1e-9 for value in normalized_quantiles):
-                raise ValueError("models.nbeatsx.quantiles must include 0.5 for p50-compatible evaluation.")
+                raise ValueError(f"models.{model_name}.quantiles must include 0.5 for p50-compatible evaluation.")
+            quantile_weights = model_cfg.get("quantile_weights", [])
+            if quantile_weights:
+                normalized_weights = [float(value) for value in quantile_weights]
+                if len(normalized_weights) != len(normalized_quantiles):
+                    raise ValueError(f"models.{model_name}.quantile_weights must match quantiles length.")
+                if any(value <= 0.0 for value in normalized_weights):
+                    raise ValueError(f"models.{model_name}.quantile_weights must be strictly positive.")
+                model_cfg["quantile_weights"] = normalized_weights
+            else:
+                model_cfg["quantile_weights"] = []
             model_cfg["quantiles"] = normalized_quantiles
         else:
             model_cfg["quantiles"] = []
+            model_cfg["quantile_weights"] = []
         model_cfg["loss_name"] = loss_name
         model_cfg["loss_delta"] = loss_delta
         model_cfg["h"] = self.prediction_horizon
@@ -231,6 +249,12 @@ class ProjectConfig:
         model_cfg["target_transform"] = target_transform
         model_cfg["exog_scaler"] = exog_scaler
         return model_cfg
+
+    def nbeatsx_runtime_config(self) -> dict[str, Any]:
+        return self.runtime_model_config("nbeatsx")
+
+    def nhits_runtime_config(self) -> dict[str, Any]:
+        return self.runtime_model_config("nhits")
 
     def validate_runtime_contracts(self) -> None:
         if self.target_column != "y":
@@ -248,8 +272,9 @@ class ProjectConfig:
             self.validate_weather_contracts()
         self.validate_quantile_postprocess_contracts()
         self.validate_scenario_evaluation_contracts()
-        if "nbeatsx" in self.models:
-            self.nbeatsx_runtime_config()
+        for model_name, model_cfg in self.models.items():
+            if str(model_cfg.get("type", "")).lower() in NEURALFORECAST_MODEL_TYPES:
+                self.runtime_model_config(model_name)
 
     def validate_derived_feature_contracts(self) -> None:
         derived_names: set[str] = set()
