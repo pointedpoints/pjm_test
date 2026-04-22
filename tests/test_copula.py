@@ -45,10 +45,11 @@ def _prediction_frame() -> pd.DataFrame:
 
 
 def test_build_quantile_surface_panel_extracts_days_and_pseudo_observations() -> None:
-    panel = build_quantile_surface_panel(_prediction_frame())
+    panel = build_quantile_surface_panel(_prediction_frame(), tail_policy="linear")
     assert panel.horizon == 2
     assert len(panel.forecast_days) == 3
     assert panel.pseudo_observations().shape == (3, 2)
+    assert panel.surfaces_by_day[0][0].tail_policy == "linear"
 
 
 def test_gaussian_copula_fit_and_sample() -> None:
@@ -89,11 +90,17 @@ def test_student_t_copula_fit_and_sample() -> None:
 
 
 def test_fit_copula_from_predictions_and_sample_scenarios() -> None:
-    copula, panel = fit_copula_from_predictions(_prediction_frame(), family="student_t", dof_grid=[3.0, 5.0])
+    copula, panel = fit_copula_from_predictions(
+        _prediction_frame(),
+        family="student_t",
+        dof_grid=[3.0, 5.0],
+        tail_policy="linear",
+    )
     marginals = panel.marginals_for_day("2026-01-03")
     scenarios = sample_copula_scenarios(copula, marginals, 8, random_state=7)
     assert scenarios.shape == (8, 2)
     assert np.all(np.isfinite(scenarios))
+    assert marginals.surfaces[1].ppf(0.95) > 21.0
 
 
 def test_energy_and_variogram_score_are_non_negative() -> None:

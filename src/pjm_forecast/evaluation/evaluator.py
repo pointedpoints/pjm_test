@@ -219,6 +219,7 @@ class Evaluator:
                 n_samples=int(scenario_cfg.get("n_samples", 256)),
                 dof_grid=scenario_cfg.get("dof_grid"),
                 random_seed=int(scenario_cfg.get("random_seed", run.seed)),
+                tail_policy=str(scenario_cfg.get("tail_policy", "flat")),
             )
             row: dict[str, object] = {"run": run.name, "model": run.model, "seed": run.seed, **diagnostics}
             rows.append(row)

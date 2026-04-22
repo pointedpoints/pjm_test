@@ -43,9 +43,11 @@ def test_compute_scenario_diagnostics_returns_scores_for_quantile_predictions() 
         n_samples=32,
         dof_grid=[3.0, 5.0],
         random_seed=7,
+        tail_policy="linear",
     )
     assert diagnostics["has_scenarios"] is True
     assert diagnostics["family"] == "student_t"
+    assert diagnostics["tail_policy"] == "linear"
     assert diagnostics["energy_score"] >= 0.0
     assert diagnostics["variogram_score"] >= 0.0
     assert diagnostics["path_mean_mae"] >= 0.0

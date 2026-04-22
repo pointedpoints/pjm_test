@@ -7,15 +7,21 @@ import pandas as pd
 
 from pjm_forecast.prediction_contract import is_quantile_prediction_frame
 
+TAIL_POLICIES = {"flat", "linear"}
+
 
 @dataclass(frozen=True)
 class QuantileSurface:
     probabilities: np.ndarray
     values: np.ndarray
+    tail_policy: str = "flat"
 
     def __post_init__(self) -> None:
         probabilities = np.asarray(self.probabilities, dtype=float)
         values = np.asarray(self.values, dtype=float)
+        tail_policy = str(self.tail_policy).lower()
+        if tail_policy not in TAIL_POLICIES:
+            raise ValueError(f"Unsupported QuantileSurface tail_policy={self.tail_policy!r}.")
         if probabilities.ndim != 1 or values.ndim != 1:
             raise ValueError("QuantileSurface expects one-dimensional probabilities and values.")
         if len(probabilities) != len(values):
@@ -30,21 +36,30 @@ class QuantileSurface:
             raise ValueError("QuantileSurface values must be monotone non-decreasing.")
         object.__setattr__(self, "probabilities", probabilities)
         object.__setattr__(self, "values", values)
+        object.__setattr__(self, "tail_policy", tail_policy)
 
     @classmethod
     def from_quantiles(
         cls,
         probabilities: list[float] | np.ndarray,
         values: list[float] | np.ndarray,
+        *,
+        tail_policy: str = "flat",
     ) -> QuantileSurface:
         probs = np.asarray(probabilities, dtype=float)
         vals = np.asarray(values, dtype=float)
         order = np.argsort(probs)
-        return cls(probabilities=probs[order], values=vals[order])
+        return cls(probabilities=probs[order], values=vals[order], tail_policy=tail_policy)
 
     def ppf(self, probability: float | np.ndarray) -> float | np.ndarray:
         probs = np.asarray(probability, dtype=float)
         clipped = np.clip(probs, 0.0, 1.0)
+        if self.tail_policy == "linear":
+            result = self._linear_tail_ppf(clipped)
+            if np.ndim(probability) == 0:
+                return float(result)
+            return result
+
         extended_probs = np.concatenate(([0.0], self.probabilities, [1.0]))
         extended_values = np.concatenate(([self.values[0]], self.values, [self.values[-1]]))
         result = np.interp(clipped, extended_probs, extended_values)
@@ -52,13 +67,66 @@ class QuantileSurface:
             return float(result)
         return result
 
+    def _linear_tail_ppf(self, probabilities: np.ndarray) -> np.ndarray:
+        original_shape = probabilities.shape
+        flat_probabilities = np.atleast_1d(probabilities).astype(float)
+        result = np.interp(flat_probabilities, self.probabilities, self.values)
+
+        lower_mask = flat_probabilities < self.probabilities[0]
+        upper_mask = flat_probabilities > self.probabilities[-1]
+        if np.any(lower_mask):
+            lower_slope = self._tail_slope(0, 1)
+            result[lower_mask] = self.values[0] + lower_slope * (flat_probabilities[lower_mask] - self.probabilities[0])
+        if np.any(upper_mask):
+            upper_slope = self._tail_slope(-2, -1)
+            result[upper_mask] = self.values[-1] + upper_slope * (flat_probabilities[upper_mask] - self.probabilities[-1])
+        return result.reshape(original_shape)
+
+    def _tail_slope(self, first_index: int, second_index: int) -> float:
+        probability_delta = self.probabilities[second_index] - self.probabilities[first_index]
+        if probability_delta <= 0.0:
+            return 0.0
+        value_delta = self.values[second_index] - self.values[first_index]
+        return max(float(value_delta / probability_delta), 0.0)
+
     def cdf(self, value: float | np.ndarray) -> float | np.ndarray:
         targets = np.asarray(value, dtype=float)
+        if self.tail_policy == "linear":
+            result = self._linear_tail_cdf(targets)
+            if np.ndim(value) == 0:
+                return float(result)
+            return result
+
         x_knots, p_knots = self._cdf_knots()
         result = np.interp(targets, x_knots, p_knots, left=0.0, right=1.0)
         if np.ndim(value) == 0:
             return float(result)
         return result
+
+    def _linear_tail_cdf(self, values: np.ndarray) -> np.ndarray:
+        original_shape = values.shape
+        flat_values = np.atleast_1d(values).astype(float)
+        x_knots, p_knots = self._cdf_knots()
+        result = np.interp(flat_values, x_knots, p_knots)
+
+        lower_slope = self._tail_slope(0, 1)
+        if lower_slope > 0.0:
+            lower_edge_value = self.values[0] - lower_slope * self.probabilities[0]
+            lower_mask = flat_values < self.values[0]
+            result[lower_mask] = self.probabilities[0] + (flat_values[lower_mask] - self.values[0]) / lower_slope
+            result[flat_values <= lower_edge_value] = 0.0
+        else:
+            result[flat_values < self.values[0]] = 0.0
+
+        upper_slope = self._tail_slope(-2, -1)
+        if upper_slope > 0.0:
+            upper_edge_value = self.values[-1] + upper_slope * (1.0 - self.probabilities[-1])
+            upper_mask = flat_values > self.values[-1]
+            result[upper_mask] = self.probabilities[-1] + (flat_values[upper_mask] - self.values[-1]) / upper_slope
+            result[flat_values >= upper_edge_value] = 1.0
+        else:
+            result[flat_values > self.values[-1]] = 1.0
+        return np.clip(result, 0.0, 1.0).reshape(original_shape)
 
     def interval(self, coverage: float) -> tuple[float, float]:
         coverage = float(coverage)
@@ -102,7 +170,7 @@ class QuantileSurface:
         return np.asarray(unique_values, dtype=float), np.asarray(unique_probabilities, dtype=float)
 
 
-def quantile_surfaces_from_frame(predictions: pd.DataFrame) -> dict[pd.Timestamp, QuantileSurface]:
+def quantile_surfaces_from_frame(predictions: pd.DataFrame, *, tail_policy: str = "flat") -> dict[pd.Timestamp, QuantileSurface]:
     if not is_quantile_prediction_frame(predictions):
         return {}
 
@@ -115,6 +183,7 @@ def quantile_surfaces_from_frame(predictions: pd.DataFrame) -> dict[pd.Timestamp
         surfaces[pd.Timestamp(ds)] = QuantileSurface.from_quantiles(
             ordered["quantile"].to_numpy(dtype=float),
             ordered["y_pred"].to_numpy(dtype=float),
+            tail_policy=tail_policy,
         )
     return surfaces
 
