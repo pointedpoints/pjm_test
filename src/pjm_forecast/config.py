@@ -110,6 +110,8 @@ class ProjectConfig:
                 return set()
             if kind == "hour_indicator":
                 return set()
+            if kind == "prior_day_price_stat":
+                return {str(item.get("source", self.target_column))}
             return set()
 
         changed = True
@@ -238,10 +240,26 @@ class ProjectConfig:
                 model_cfg["quantile_weights"] = normalized_weights
             else:
                 model_cfg["quantile_weights"] = []
+            quantile_deltas = model_cfg.get("quantile_deltas", [])
+            if quantile_deltas:
+                normalized_deltas = [float(value) for value in quantile_deltas]
+                if len(normalized_deltas) != len(normalized_quantiles):
+                    raise ValueError(f"models.{model_name}.quantile_deltas must match quantiles length.")
+                if any(value <= 0.0 for value in normalized_deltas):
+                    raise ValueError(f"models.{model_name}.quantile_deltas must be strictly positive.")
+                model_cfg["quantile_deltas"] = normalized_deltas
+            else:
+                model_cfg["quantile_deltas"] = []
+            monotonicity_penalty = float(model_cfg.get("monotonicity_penalty", 0.0))
+            if monotonicity_penalty < 0.0:
+                raise ValueError(f"models.{model_name}.monotonicity_penalty must be >= 0.")
+            model_cfg["monotonicity_penalty"] = monotonicity_penalty
             model_cfg["quantiles"] = normalized_quantiles
         else:
             model_cfg["quantiles"] = []
             model_cfg["quantile_weights"] = []
+            model_cfg["quantile_deltas"] = []
+            model_cfg["monotonicity_penalty"] = 0.0
         model_cfg["loss_name"] = loss_name
         model_cfg["loss_delta"] = loss_delta
         model_cfg["h"] = self.prediction_horizon
@@ -284,6 +302,7 @@ class ProjectConfig:
             *self.dataset.get("exogenous_columns", {}).keys(),
             *self.weather_output_columns(),
             *["is_weekend", "is_holiday"],
+            self.target_column,
         }
         for item in self.features.get("derived_ramps", []):
             source = str(item["source"])
@@ -335,6 +354,13 @@ class ProjectConfig:
                 hour = int(item.get("hour", -1))
                 if hour < 0 or hour > 23:
                     raise ValueError(f"derived_features hour_indicator hour={hour!r} is unsupported for {name!r}.")
+            elif kind == "prior_day_price_stat":
+                source = str(item.get("source", self.target_column))
+                stat = str(item.get("stat", ""))
+                if source not in available_feature_names:
+                    raise ValueError(f"derived_features source {source!r} must already exist before deriving {name!r}.")
+                if stat not in {"spread", "max_ramp", "max", "min", "mean"}:
+                    raise ValueError(f"derived_features prior_day_price_stat stat={stat!r} is unsupported for {name!r}.")
             else:
                 raise ValueError(f"Unsupported derived_features kind={kind!r}.")
             available_feature_names.add(name)

@@ -127,6 +127,11 @@ class FeatureSchema:
                     if side not in dependencies:
                         dependencies.append(side)
                 continue
+            if kind == "prior_day_price_stat":
+                source = str(spec.get("source", self.config.target_column))
+                if source != self.config.target_column and source not in dependencies:
+                    dependencies.append(source)
+                continue
         return dependencies
 
     def derived_feature_columns(self) -> list[str]:
@@ -323,6 +328,11 @@ class FeatureSchema:
                 hour = int(spec["hour"])
                 feature_df[name] = (feature_df["hour"] == hour).astype(float)
                 continue
+            if kind == "prior_day_price_stat":
+                source = str(spec.get("source", self.config.target_column))
+                stat = str(spec["stat"])
+                feature_df[name] = self._prior_day_price_stat(feature_df, source=source, stat=stat)
+                continue
             raise ValueError(f"Unsupported derived_features kind: {kind!r}")
 
         for lag in self.config.features["price_lags"]:
@@ -469,6 +479,26 @@ class FeatureSchema:
         month = normalized.dt.month
         day = normalized.dt.day
         return (((month == 12) & (day >= 20)) | ((month == 1) & (day <= 3))).astype(float)
+
+    def _prior_day_price_stat(self, feature_df: pd.DataFrame, source: str, stat: str) -> pd.Series:
+        daily = feature_df.loc[:, ["date", "ds", source]].copy()
+        if stat == "spread":
+            values = daily.groupby("date")[source].max() - daily.groupby("date")[source].min()
+        elif stat == "max_ramp":
+            ordered = daily.sort_values("ds")
+            ramps = ordered.groupby("date")[source].diff().abs()
+            values = ramps.groupby(ordered["date"]).max().fillna(0.0)
+        elif stat == "max":
+            values = daily.groupby("date")[source].max()
+        elif stat == "min":
+            values = daily.groupby("date")[source].min()
+        elif stat == "mean":
+            values = daily.groupby("date")[source].mean()
+        else:
+            raise ValueError(f"Unsupported prior_day_price_stat stat: {stat}")
+
+        prior_values = values.shift(1).fillna(0.0)
+        return feature_df["date"].map(prior_values).fillna(0.0).astype(float)
 
 
 @dataclass(frozen=True)

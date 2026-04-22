@@ -50,6 +50,8 @@ class NHITSModel(ForecastModel):
     loss_delta: float = 1.0
     quantiles: list[float] = field(default_factory=list)
     quantile_weights: list[float] = field(default_factory=list)
+    quantile_deltas: list[float] = field(default_factory=list)
+    monotonicity_penalty: float = 0.0
     early_stop_patience_steps: int = -1
     val_check_steps: int = 100
     validation_size: int = 168
@@ -94,9 +96,17 @@ class NHITSModel(ForecastModel):
                 raise ValueError("quantiles must include 0.5 for p50-compatible evaluation.")
             if self.quantile_weights and len(self.quantile_weights) != len(self.quantiles):
                 raise ValueError("quantile_weights must match quantiles length.")
+            if self.quantile_deltas and len(self.quantile_deltas) != len(self.quantiles):
+                raise ValueError("quantile_deltas must match quantiles length.")
+            if any(value <= 0.0 for value in self.quantile_deltas):
+                raise ValueError("quantile_deltas must be strictly positive.")
+            if self.monotonicity_penalty < 0.0:
+                raise ValueError("monotonicity_penalty must be >= 0.")
         else:
             self.quantiles = []
             self.quantile_weights = []
+            self.quantile_deltas = []
+            self.monotonicity_penalty = 0.0
 
     def _price_columns(self, frame: pd.DataFrame) -> list[str]:
         return [column for column in frame.columns if column == "y" or column.startswith("price_lag_")]
@@ -169,15 +179,21 @@ class NHITSModel(ForecastModel):
         from neuralforecast.losses.pytorch import HuberMQLoss, MAE, MQLoss  # type: ignore
 
         if self.loss_name == "mqloss":
-            if self.quantile_weights:
-                return WeightedMQLoss(quantiles=list(self.quantiles), quantile_weights=list(self.quantile_weights))
+            if self.quantile_weights or self.monotonicity_penalty > 0.0:
+                return WeightedMQLoss(
+                    quantiles=list(self.quantiles),
+                    quantile_weights=list(self.quantile_weights) or None,
+                    monotonicity_penalty=float(self.monotonicity_penalty),
+                )
             return MQLoss(quantiles=list(self.quantiles))
         if self.loss_name == "huber_mqloss":
-            if self.quantile_weights:
+            if self.quantile_weights or self.quantile_deltas or self.monotonicity_penalty > 0.0:
                 return WeightedHuberMQLoss(
                     quantiles=list(self.quantiles),
                     delta=float(self.loss_delta),
-                    quantile_weights=list(self.quantile_weights),
+                    quantile_weights=list(self.quantile_weights) or None,
+                    quantile_deltas=list(self.quantile_deltas) or None,
+                    monotonicity_penalty=float(self.monotonicity_penalty),
                 )
             return HuberMQLoss(quantiles=list(self.quantiles), delta=float(self.loss_delta))
         return MAE()
@@ -315,6 +331,8 @@ class NHITSModel(ForecastModel):
             "loss_delta": self.loss_delta,
             "quantiles": self.quantiles,
             "quantile_weights": self.quantile_weights,
+            "quantile_deltas": self.quantile_deltas,
+            "monotonicity_penalty": self.monotonicity_penalty,
             "early_stop_patience_steps": self.early_stop_patience_steps,
             "val_check_steps": self.val_check_steps,
             "validation_size": self.validation_size,

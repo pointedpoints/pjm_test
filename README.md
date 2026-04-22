@@ -18,6 +18,11 @@ This config uses:
 - Open-Meteo historical forecast weather features
 - `NBEATSx` as the active benchmark model
 
+Current probabilistic experiments are tracked separately from the canonical
+config. As of the latest experiment notes, `NHITS 600` is the strongest
+probabilistic structure candidate, with `NBEATSx 600` retained as the main
+baseline for comparison.
+
 ## Environment
 
 Use `uv` with Python 3.12:
@@ -76,10 +81,23 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 ## Data Contracts
 
 - Timestamps stay in timezone-naive local time. Do not remap to UTC in v1.
+- Calendar features are derived from the `ds` local hourly sequence. Do not mix
+  UTC-remapped timestamps into feature, split, lag, or forecast-window logic.
 - Canonical panel columns include `unique_id`, `ds`, `y`, and configured future exogenous signals.
 - `NBEATSx` uses:
   - future exogenous signals plus calendar columns as `futr_exog`
   - price lags plus configured lagged signal columns as `hist_exog`
+
+## Experiment Layout
+
+- `configs/pjm_day_ahead_current_processed.yaml` is the canonical runnable
+  workflow.
+- `configs/experiments/` contains reproducible experiment branches. Keep these
+  config-driven and avoid changing canonical behavior unless an experiment has
+  been promoted.
+- `docs/experiments/` records small human-readable summaries for experiment
+  decisions. Generated prediction, metrics, plot, and scenario artifacts remain
+  under `artifacts*` directories and should not be treated as source of truth.
 
 ## Splits
 

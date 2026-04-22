@@ -278,6 +278,43 @@ def test_feature_schema_builds_hour_indicator_and_sum_features(tmp_path: Path) -
     assert prepared.feature_df.loc[8, "pressure_sum"] == 0.0
 
 
+def test_feature_schema_builds_prior_day_price_stat_features(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].extend(
+                [
+                    "prior_day_price_spread",
+                    "prior_day_price_max_ramp",
+                    "prior_day_price_max",
+                ]
+            ),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {"kind": "prior_day_price_stat", "source": "y", "stat": "spread", "name": "prior_day_price_spread"},
+                    {"kind": "prior_day_price_stat", "source": "y", "stat": "max_ramp", "name": "prior_day_price_max_ramp"},
+                    {"kind": "prior_day_price_stat", "source": "y", "stat": "max", "name": "prior_day_price_max"},
+                ],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    first_day = prepared.feature_df.iloc[:24]
+    second_day = prepared.feature_df.iloc[24:48]
+    third_day = prepared.feature_df.iloc[48:72]
+
+    assert first_day["prior_day_price_spread"].eq(0.0).all()
+    assert second_day["prior_day_price_spread"].eq(23.0).all()
+    assert second_day["prior_day_price_max_ramp"].eq(1.0).all()
+    assert second_day["prior_day_price_max"].eq(23.0).all()
+    assert third_day["prior_day_price_max"].eq(47.0).all()
+    assert "prior_day_price_spread" in prepared.schema.nbeatsx_futr_exog_columns()
+
+
 def test_feature_schema_builds_pre_holiday_features() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     raw = yaml.safe_load(config.path.read_text(encoding="utf-8"))
