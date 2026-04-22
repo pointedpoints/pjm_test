@@ -13,6 +13,21 @@ QUANTILE_INTERVALS: dict[str, tuple[float, float]] = {
     "98": (0.01, 0.99),
 }
 
+UPPER_TAIL_GAPS: dict[str, tuple[float, float]] = {
+    "q95_q99": (0.95, 0.99),
+    "q99_q995": (0.99, 0.995),
+}
+
+UPPER_TAIL_MISS_METRICS = [
+    "q99_exceedance_rate",
+    "q99_excess_mean",
+    "q99_excess_p95",
+    "max_y_q99_gap",
+    "worst_q99_underprediction",
+    "daily_max_q99_gap_mean",
+    "daily_max_q99_gap_max",
+]
+
 
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(np.abs(y_true - y_pred)))
@@ -45,6 +60,11 @@ def compute_quantile_diagnostics(predictions: pd.DataFrame) -> dict[str, float |
         for label in QUANTILE_INTERVALS:
             diagnostics[f"coverage_{label}"] = float("nan")
             diagnostics[f"width_{label}"] = float("nan")
+        for label in UPPER_TAIL_GAPS:
+            diagnostics[f"{label}_gap_mean"] = float("nan")
+            diagnostics[f"{label}_slope_mean"] = float("nan")
+        for metric_name in UPPER_TAIL_MISS_METRICS:
+            diagnostics[metric_name] = float("nan")
         return diagnostics
 
     quantile_predictions = predictions.copy()
@@ -77,6 +97,7 @@ def compute_quantile_diagnostics(predictions: pd.DataFrame) -> dict[str, float |
         y_values = y_true.reindex(prediction_grid.index).to_numpy(dtype=float)
         diagnostics[f"coverage_{label}"] = float(((y_values >= lower_values) & (y_values <= upper_values)).mean())
         diagnostics[f"width_{label}"] = float(np.mean(upper_values - lower_values))
+    diagnostics.update(_compute_upper_tail_diagnostics(prediction_grid, y_true))
     return diagnostics
 
 
@@ -108,3 +129,43 @@ def _resolve_quantile_column(columns: pd.Index, target: float) -> float | None:
         if np.isclose(float(column), target):
             return float(column)
     return None
+
+
+def _compute_upper_tail_diagnostics(prediction_grid: pd.DataFrame, y_true: pd.Series) -> dict[str, float]:
+    diagnostics: dict[str, float] = {}
+    for label, (lower, upper) in UPPER_TAIL_GAPS.items():
+        lower_column = _resolve_quantile_column(prediction_grid.columns, lower)
+        upper_column = _resolve_quantile_column(prediction_grid.columns, upper)
+        if lower_column is None or upper_column is None:
+            diagnostics[f"{label}_gap_mean"] = float("nan")
+            diagnostics[f"{label}_slope_mean"] = float("nan")
+            continue
+
+        gap = prediction_grid[upper_column].to_numpy(dtype=float) - prediction_grid[lower_column].to_numpy(dtype=float)
+        diagnostics[f"{label}_gap_mean"] = float(np.mean(gap))
+        diagnostics[f"{label}_slope_mean"] = float(np.mean(gap / (upper - lower)))
+
+    q99_column = _resolve_quantile_column(prediction_grid.columns, 0.99)
+    if q99_column is None:
+        for metric_name in UPPER_TAIL_MISS_METRICS:
+            diagnostics[metric_name] = float("nan")
+        return diagnostics
+
+    aligned_y = y_true.reindex(prediction_grid.index).astype(float)
+    q99 = prediction_grid[q99_column].astype(float)
+    excess = (aligned_y - q99).clip(lower=0.0)
+    diagnostics["q99_exceedance_rate"] = float((aligned_y > q99).mean())
+    diagnostics["q99_excess_mean"] = float(excess.mean())
+    diagnostics["q99_excess_p95"] = float(np.quantile(excess.to_numpy(dtype=float), 0.95))
+
+    max_y_timestamp = aligned_y.idxmax()
+    diagnostics["max_y_q99_gap"] = float(aligned_y.loc[max_y_timestamp] - q99.loc[max_y_timestamp])
+    diagnostics["worst_q99_underprediction"] = float(excess.max())
+
+    daily = pd.DataFrame({"y": aligned_y, "q99": q99})
+    daily["day"] = pd.DatetimeIndex(daily.index).floor("D")
+    daily_maxima = daily.groupby("day", sort=True)[["y", "q99"]].max()
+    daily_max_gap = daily_maxima["y"] - daily_maxima["q99"]
+    diagnostics["daily_max_q99_gap_mean"] = float(daily_max_gap.mean())
+    diagnostics["daily_max_q99_gap_max"] = float(daily_max_gap.max())
+    return diagnostics

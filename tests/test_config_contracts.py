@@ -62,6 +62,24 @@ def test_current_processed_config_uses_quantile_nbeatsx_contract() -> None:
     assert scenario_cfg["n_samples"] == 256
 
 
+def test_tail_grid_phase1_config_uses_raw_nhits_upper_tail_contract() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_validation_nhits_tail_grid_phase1.yaml"))
+    baseline_cfg = config.runtime_model_config("nhits_baseline")
+    tail_cfg = config.runtime_model_config("nhits_tail_grid_weighted")
+
+    assert config.backtest["benchmark_models"] == ["nhits_baseline", "nhits_tail_grid", "nhits_tail_grid_weighted"]
+    assert config.report["quantile_postprocess"]["monotonic"] is False
+    assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert config.report["scenario_evaluation"]["enabled"] is False
+    assert baseline_cfg["quantiles"][-1] == 0.99
+    assert tail_cfg["type"] == "nhits"
+    assert tail_cfg["quantiles"][-3:] == [0.975, 0.99, 0.995]
+    assert len(tail_cfg["quantile_weights"]) == len(tail_cfg["quantiles"])
+    assert len(tail_cfg["quantile_deltas"]) == len(tail_cfg["quantiles"])
+    assert tail_cfg["quantile_weights"][-1] > tail_cfg["quantile_weights"][-2] > tail_cfg["quantile_weights"][-3]
+    assert tail_cfg["monotonicity_penalty"] == 0.03
+
+
 def test_load_config_rejects_nbeatsx_horizon_drift(tmp_path: Path) -> None:
     config_path = _write_temp_config(tmp_path, lambda payload: payload["models"]["nbeatsx"].__setitem__("h", 12))
     with pytest.raises(ValueError, match="must match backtest.horizon"):
