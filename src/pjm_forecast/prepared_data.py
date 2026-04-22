@@ -132,6 +132,12 @@ class FeatureSchema:
                 if source != self.config.target_column and source not in dependencies:
                     dependencies.append(source)
                 continue
+            if kind == "spike_score":
+                for input_item in spec.get("inputs", []):
+                    source = str(input_item["source"])
+                    if source not in dependencies:
+                        dependencies.append(source)
+                continue
         return dependencies
 
     def derived_feature_columns(self) -> list[str]:
@@ -333,6 +339,9 @@ class FeatureSchema:
                 stat = str(spec["stat"])
                 feature_df[name] = self._prior_day_price_stat(feature_df, source=source, stat=stat)
                 continue
+            if kind == "spike_score":
+                feature_df[name] = self._spike_score(feature_df, spec)
+                continue
             raise ValueError(f"Unsupported derived_features kind: {kind!r}")
 
         for lag in self.config.features["price_lags"]:
@@ -499,6 +508,22 @@ class FeatureSchema:
 
         prior_values = values.shift(1).fillna(0.0)
         return feature_df["date"].map(prior_values).fillna(0.0).astype(float)
+
+    def _spike_score(self, feature_df: pd.DataFrame, spec: dict[str, object]) -> pd.Series:
+        score = pd.Series(0.0, index=feature_df.index, dtype=float)
+        total_weight = 0.0
+        for input_item in spec.get("inputs", []):
+            source = str(input_item["source"])
+            weight = float(input_item.get("weight", 1.0))
+            direction = str(input_item.get("direction", "positive"))
+            ranked = feature_df[source].astype(float).rank(pct=True, method="average").fillna(0.5)
+            if direction == "negative":
+                ranked = 1.0 - ranked
+            score = score + weight * ranked
+            total_weight += weight
+        if total_weight <= 0.0:
+            raise ValueError(f"spike_score {spec.get('name')!r} requires positive total weight.")
+        return (score / total_weight).clip(lower=0.0, upper=1.0).astype(float)
 
 
 @dataclass(frozen=True)

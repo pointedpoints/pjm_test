@@ -391,6 +391,46 @@ def test_load_config_allows_asymmetric_cqr_with_hour_grouping_and_coverage_floor
     assert calibration["group_by"] == "hour"
 
 
+def test_load_config_allows_hour_x_regime_calibration(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["features"]["future_exog"].append("spike_score"),
+            payload["features"].setdefault("derived_features", []).append(
+                {
+                    "kind": "spike_score",
+                    "name": "spike_score",
+                    "inputs": [
+                        {"source": "zonal_load_forecast", "weight": 0.7},
+                        {"source": "system_load_forecast", "weight": 0.3},
+                    ],
+                }
+            ),
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "calibration": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "method": "cqr_asymmetric",
+                        "group_by": "hour_x_regime",
+                        "regime_score_column": "spike_score",
+                        "regime_threshold": 0.67,
+                        "min_group_size": 24,
+                    },
+                },
+            ),
+        ),
+    )
+    calibration = load_config(config_path).report["quantile_postprocess"]["calibration"]
+    assert calibration["group_by"] == "hour_x_regime"
+    assert calibration["regime_score_column"] == "spike_score"
+
+
 def test_load_config_rejects_invalid_quantile_coverage_floor_key(tmp_path: Path) -> None:
     config_path = _write_temp_config(
         tmp_path,

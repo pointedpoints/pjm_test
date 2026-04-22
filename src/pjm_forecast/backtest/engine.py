@@ -27,6 +27,17 @@ def _future_slice(feature_df: pd.DataFrame, forecast_day: pd.Timestamp, horizon:
     return future_df
 
 
+def _prediction_context_columns(config: ProjectConfig, future_df: pd.DataFrame) -> list[str]:
+    columns = ["ds", "y"]
+    calibration_cfg = config.report.get("quantile_postprocess", {}).get("calibration", {})
+    if calibration_cfg.get("group_by") == "hour_x_regime":
+        regime_column = str(calibration_cfg.get("regime_score_column", "spike_score"))
+        if regime_column not in future_df.columns:
+            raise ValueError(f"hour_x_regime calibration requires future feature column {regime_column!r}.")
+        columns.append(regime_column)
+    return columns
+
+
 def _retrain_due(forecast_day: pd.Timestamp, retrain_weekday: int, existing_model: object | None) -> bool:
     return existing_model is None or forecast_day.weekday() == retrain_weekday
 
@@ -193,7 +204,7 @@ def run_rolling_backtest(
             model_name=model_name,
             expected_quantiles=schema.expected_prediction_quantiles(model_name),
         )
-        merged = future_df.loc[:, ["ds", "y"]].merge(prediction_df, on="ds", how="left")
+        merged = future_df.loc[:, _prediction_context_columns(config, future_df)].merge(prediction_df, on="ds", how="left")
         merged["model"] = model_name
         merged["split"] = split_name
         merged["seed"] = seed

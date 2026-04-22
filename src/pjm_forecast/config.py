@@ -17,7 +17,7 @@ NEURALFORECAST_LOSS_NAMES = {"mae", "mqloss", "huber_mqloss"}
 NEURALFORECAST_MODEL_TYPES = {"nbeatsx", "nhits"}
 TUNING_METRICS = {"mae", "rmse", "smape", "pinball"}
 QUANTILE_CALIBRATION_METHODS = {"cqr", "cqr_asymmetric"}
-QUANTILE_CALIBRATION_GROUP_BY = {"hour"}
+QUANTILE_CALIBRATION_GROUP_BY = {"hour", "hour_x_regime"}
 SCENARIO_COPULA_FAMILIES = {"gaussian", "student_t"}
 SCENARIO_TAIL_POLICIES = {"flat", "linear"}
 
@@ -113,6 +113,8 @@ class ProjectConfig:
                 return set()
             if kind == "prior_day_price_stat":
                 return {str(item.get("source", self.target_column))}
+            if kind == "spike_score":
+                return {str(input_item["source"]) for input_item in item.get("inputs", [])}
             return set()
 
         changed = True
@@ -362,6 +364,22 @@ class ProjectConfig:
                     raise ValueError(f"derived_features source {source!r} must already exist before deriving {name!r}.")
                 if stat not in {"spread", "max_ramp", "max", "min", "mean"}:
                     raise ValueError(f"derived_features prior_day_price_stat stat={stat!r} is unsupported for {name!r}.")
+            elif kind == "spike_score":
+                inputs = item.get("inputs", [])
+                if not isinstance(inputs, list) or not inputs:
+                    raise ValueError(f"derived_features spike_score requires non-empty inputs for {name!r}.")
+                for input_item in inputs:
+                    if not isinstance(input_item, dict):
+                        raise ValueError(f"derived_features spike_score inputs must be mappings for {name!r}.")
+                    source = str(input_item.get("source", ""))
+                    if source not in available_feature_names:
+                        raise ValueError(f"derived_features spike_score source {source!r} is unavailable for {name!r}.")
+                    direction = str(input_item.get("direction", "positive"))
+                    if direction not in {"positive", "negative"}:
+                        raise ValueError(f"derived_features spike_score direction={direction!r} is unsupported for {name!r}.")
+                    weight = float(input_item.get("weight", 1.0))
+                    if weight <= 0.0:
+                        raise ValueError(f"derived_features spike_score weights must be positive for {name!r}.")
             else:
                 raise ValueError(f"Unsupported derived_features kind={kind!r}.")
             available_feature_names.add(name)
@@ -434,6 +452,11 @@ class ProjectConfig:
                 "report.quantile_postprocess.calibration.group_by must be one of "
                 f"{sorted(QUANTILE_CALIBRATION_GROUP_BY)} when configured."
             )
+        regime_threshold = calibration.get("regime_threshold")
+        if regime_threshold is not None:
+            numeric_threshold = float(regime_threshold)
+            if not 0.0 < numeric_threshold < 1.0:
+                raise ValueError("report.quantile_postprocess.calibration.regime_threshold must be in (0, 1).")
         min_group_size = calibration.get("min_group_size")
         if min_group_size is not None and (not isinstance(min_group_size, int) or int(min_group_size) <= 0):
             raise ValueError("report.quantile_postprocess.calibration.min_group_size must be a positive integer.")

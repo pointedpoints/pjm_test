@@ -15,7 +15,9 @@ from pjm_forecast.prediction_contract import (
 
 DEFAULT_QUANTILE_CALIBRATION_METHOD = "cqr"
 SUPPORTED_QUANTILE_CALIBRATION_METHODS = {"cqr", "cqr_asymmetric"}
-SUPPORTED_QUANTILE_CALIBRATION_GROUPS = {None, "hour"}
+SUPPORTED_QUANTILE_CALIBRATION_GROUPS = {None, "hour", "hour_x_regime"}
+DEFAULT_REGIME_SCORE_COLUMN = "spike_score"
+DEFAULT_REGIME_THRESHOLD = 0.67
 ALL_GROUP = "__all__"
 
 
@@ -30,6 +32,8 @@ class ConformalQuantileCalibration:
     method: str
     group_by: str | None
     adjustments: dict[tuple[object, float, float], QuantilePairCalibration]
+    regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN
+    regime_threshold: float = DEFAULT_REGIME_THRESHOLD
 
 
 def symmetric_quantile_pairs(quantiles: list[float]) -> list[tuple[float, float]]:
@@ -70,25 +74,46 @@ def fit_conformal_quantile_calibration(
     group_by: str | None = None,
     interval_coverage_floors: dict[tuple[float, float], float] | dict[str, float] | None = None,
     min_group_size: int = 1,
+    regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
+    regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
 ) -> ConformalQuantileCalibration:
     method = _normalize_calibration_method(calibration_method)
     group_by = _normalize_group_by(group_by)
     min_group_size = int(min_group_size)
+    regime_threshold = _normalize_regime_threshold(regime_threshold)
     if min_group_size <= 0:
         raise ValueError("min_group_size must be >= 1.")
 
     if not is_quantile_prediction_frame(predictions):
-        return ConformalQuantileCalibration(method=method, group_by=group_by, adjustments={})
+        return ConformalQuantileCalibration(
+            method=method,
+            group_by=group_by,
+            adjustments={},
+            regime_score_column=regime_score_column,
+            regime_threshold=regime_threshold,
+        )
 
     calibrated_source = enforce_monotonic_quantiles(predictions)
     pairs = symmetric_quantile_pairs(quantile_values(calibrated_source))
     if not pairs:
-        return ConformalQuantileCalibration(method=method, group_by=group_by, adjustments={})
+        return ConformalQuantileCalibration(
+            method=method,
+            group_by=group_by,
+            adjustments={},
+            regime_score_column=regime_score_column,
+            regime_threshold=regime_threshold,
+        )
 
     floors = _normalize_interval_coverage_floors(interval_coverage_floors)
     prediction_grid = calibrated_source.pivot(index="ds", columns="quantile", values="y_pred").sort_index(axis=1)
     y_true = calibrated_source.groupby("ds", sort=True)["y"].first().reindex(prediction_grid.index).to_numpy(dtype=float)
-    groups = _group_labels(prediction_grid.index, group_by)
+    groups = _group_labels(
+        calibrated_source,
+        prediction_grid.index,
+        group_by,
+        regime_score_column=regime_score_column,
+        regime_threshold=regime_threshold,
+    )
 
     adjustments: dict[tuple[object, float, float], QuantilePairCalibration] = {}
     for lower, upper in pairs:
@@ -116,7 +141,13 @@ def fit_conformal_quantile_calibration(
                 target_coverage=target_coverage,
                 method=method,
             )
-    return ConformalQuantileCalibration(method=method, group_by=group_by, adjustments=adjustments)
+    return ConformalQuantileCalibration(
+        method=method,
+        group_by=group_by,
+        adjustments=adjustments,
+        regime_score_column=regime_score_column,
+        regime_threshold=regime_threshold,
+    )
 
 
 def apply_conformal_quantile_calibration(
@@ -129,7 +160,13 @@ def apply_conformal_quantile_calibration(
     corrected = predictions.copy()
     quantile_series = corrected["quantile"].astype(float)
     prediction_grid = corrected.pivot(index="ds", columns="quantile", values="y_pred").sort_index(axis=1)
-    group_labels = _group_labels(prediction_grid.index, calibration.group_by)
+    group_labels = _group_labels(
+        corrected,
+        prediction_grid.index,
+        calibration.group_by,
+        regime_score_column=calibration.regime_score_column,
+        regime_threshold=calibration.regime_threshold,
+    )
     labels_by_ds = pd.Series(group_labels, index=prediction_grid.index)
     groups = pd.to_datetime(corrected["ds"]).map(labels_by_ds)
     for lower, upper in symmetric_quantile_pairs(quantile_values(corrected)):
@@ -161,6 +198,8 @@ def postprocess_quantile_predictions(
     calibration_group_by: str | None = None,
     calibration_interval_coverage_floors: dict[tuple[float, float], float] | dict[str, float] | None = None,
     calibration_min_group_size: int = 1,
+    calibration_regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
+    calibration_regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
 ) -> pd.DataFrame:
     if not is_quantile_prediction_frame(predictions):
         return predictions.copy()
@@ -175,6 +214,8 @@ def postprocess_quantile_predictions(
             group_by=calibration_group_by,
             interval_coverage_floors=calibration_interval_coverage_floors,
             min_group_size=calibration_min_group_size,
+            regime_score_column=calibration_regime_score_column,
+            regime_threshold=calibration_regime_threshold,
         )
         corrected = apply_conformal_quantile_calibration(corrected, calibration)
     return corrected
@@ -192,6 +233,13 @@ def _normalize_group_by(group_by: str | None) -> str | None:
     if normalized not in SUPPORTED_QUANTILE_CALIBRATION_GROUPS:
         raise ValueError(f"Unsupported quantile calibration group_by: {group_by!r}")
     return normalized
+
+
+def _normalize_regime_threshold(regime_threshold: float) -> float:
+    threshold = float(regime_threshold)
+    if not 0.0 < threshold < 1.0:
+        raise ValueError("regime_threshold must be in (0, 1).")
+    return threshold
 
 
 def _normalize_interval_coverage_floors(
@@ -252,15 +300,32 @@ def _pair_target_coverage(
 
 
 def _group_labels(
-    index: pd.Index | pd.Series,
+    frame: pd.DataFrame,
+    index: pd.Index,
     group_by: str | None,
+    *,
+    regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
+    regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
 ) -> np.ndarray:
     timestamps = pd.to_datetime(index)
     if group_by is None:
         return np.repeat(ALL_GROUP, len(timestamps))
-    hour_labels = timestamps.dt.hour.to_numpy(dtype=int) if isinstance(timestamps, pd.Series) else timestamps.hour.to_numpy(dtype=int)
+    hour_labels = timestamps.hour.to_numpy(dtype=int)
     if group_by == "hour":
         return hour_labels
+    if group_by == "hour_x_regime":
+        if regime_score_column not in frame.columns:
+            raise ValueError(f"hour_x_regime calibration requires prediction column {regime_score_column!r}.")
+        context = frame.loc[:, ["ds", regime_score_column]].drop_duplicates("ds").copy()
+        context["ds"] = pd.to_datetime(context["ds"], utc=False)
+        scores = context.set_index("ds").reindex(index)[regime_score_column]
+        if scores.isna().any():
+            raise ValueError(f"hour_x_regime calibration found missing {regime_score_column!r} values.")
+        regime_labels = (scores.astype(float).to_numpy() >= float(regime_threshold)).astype(int)
+        labels = np.empty(len(hour_labels), dtype=object)
+        for idx, (hour, regime) in enumerate(zip(hour_labels, regime_labels, strict=True)):
+            labels[idx] = (int(hour), int(regime))
+        return labels
     raise ValueError(f"Unsupported quantile calibration group_by: {group_by!r}")
 
 
