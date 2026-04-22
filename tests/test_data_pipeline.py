@@ -315,6 +315,36 @@ def test_feature_schema_builds_prior_day_price_stat_features(tmp_path: Path) -> 
     assert "prior_day_price_spread" in prepared.schema.nbeatsx_futr_exog_columns()
 
 
+def test_feature_schema_builds_spike_score_feature(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].append("spike_score"),
+            payload["features"].__setitem__(
+                "derived_features",
+                [
+                    {
+                        "kind": "spike_score",
+                        "name": "spike_score",
+                        "inputs": [
+                            {"source": "zonal_load_forecast", "weight": 0.7},
+                            {"source": "system_load_forecast", "weight": 0.3},
+                        ],
+                    }
+                ],
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert "spike_score" in prepared.feature_df.columns
+    assert "spike_score" in prepared.schema.nbeatsx_futr_exog_columns()
+    assert prepared.feature_df["spike_score"].between(0.0, 1.0).all()
+    assert prepared.feature_df["spike_score"].iloc[-1] > prepared.feature_df["spike_score"].iloc[0]
+
+
 def test_feature_schema_builds_pre_holiday_features() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     raw = yaml.safe_load(config.path.read_text(encoding="utf-8"))

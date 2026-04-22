@@ -202,3 +202,71 @@ Next action:
 - keep `nhits_tail_grid_weighted_long` as the current tail-aggressive candidate;
 - do not promote it directly to canonical until test-split CQR/scenario results
   are checked.
+
+## Spike Score And Hour-Regime CQR
+
+Config:
+
+- `configs/experiments/pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml`
+
+This keeps `nhits_tail_grid_weighted_long` as the current tail-aggressive
+candidate and adds a new spike/regime branch:
+
+- `spike_score` derived feature from load, cooling pressure, heating pressure,
+  and prior-day max ramp;
+- `spike_score` included in NHITS future exogenous inputs;
+- prediction frames carry `spike_score` for downstream calibration grouping;
+- CQR grouping supports `hour_x_regime` with `regime_score_column=spike_score`
+  and `regime_threshold=0.67`;
+- scenario evaluation remains Student-t with `tail_policy: linear`.
+
+Implementation notes:
+
+- The new processed feature store is isolated under
+  `data/processed_nhits_tail_spike_score/`.
+- Validation evaluation does not apply CQR because the evaluator only fits
+  validation calibration for test runs. The validation run therefore checks the
+  raw/spike-score model, monotonic postprocessing, scenario proxy, and
+  real-data `hour_x_regime` CQR fitability.
+- A real validation prediction smoke fit produced 150 CQR adjustment entries for
+  `hour_x_regime`, confirming that the grouping path has enough samples for the
+  configured `min_group_size=24` fallback logic.
+
+Validation commands:
+
+```powershell
+.venv\Scripts\python.exe scripts\prepare_data.py --config configs\experiments\pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml
+.venv\Scripts\python.exe scripts\backtest_all_models.py --config configs\experiments\pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml --split validation
+.venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml --split validation
+```
+
+Validation results:
+
+| model | post pinball | post CRPS | post crossing | post cov98 | post q99-q995 gap | post q99 exceed | post worst q99 under |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| nhits_tail_grid_weighted_long | 2.5140 | 6.4051 | 0.00% | 92.99% | 10.23 | 4.05% | 87.99 |
+| nhits_tail_grid_weighted_spike_regime | 2.5254 | 6.4621 | 0.00% | 93.61% | 10.75 | 3.32% | 90.34 |
+
+Linear-tail scenario proxy:
+
+| model | energy | variogram | path mean MAE | daily max abs | daily spread abs | daily ramp abs | Spearman corr MAE |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| nhits_tail_grid_weighted_long | 38.3987 | 542.3628 | 8.4980 | 13.6951 | 13.7543 | 8.3630 | 0.1150 |
+| nhits_tail_grid_weighted_spike_regime | 38.8141 | 528.6447 | 8.5278 | 13.0584 | 12.5849 | 7.9364 | 0.1159 |
+
+Interpretation:
+
+Adding `spike_score` is not a free global win: post pinball and CRPS degrade
+slightly versus `nhits_tail_grid_weighted_long`. But the spike/regime branch
+improves the path metrics we wanted it to target: daily max, daily spread,
+daily ramp, and variogram. It also lowers q99 exceedance, while q99 worst
+underprediction worsens slightly. This is consistent with a regime signal that
+helps path shape but still needs test-split calibration before promotion.
+
+Next action:
+
+- keep `nhits_tail_grid_weighted_long` as the main tail-aggressive baseline;
+- use `nhits_tail_grid_weighted_spike_regime` for the first test-split
+  hour×regime CQR check;
+- compare test post-CQR coverage and scenario path metrics before considering a
+  gated blend.

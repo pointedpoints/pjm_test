@@ -101,6 +101,8 @@ class Evaluator:
         calibration_group_by = calibration_cfg.get("group_by")
         calibration_interval_coverage_floors = calibration_cfg.get("interval_coverage_floors")
         calibration_min_group_size = int(calibration_cfg.get("min_group_size", 1))
+        calibration_regime_score_column = str(calibration_cfg.get("regime_score_column", "spike_score"))
+        calibration_regime_threshold = float(calibration_cfg.get("regime_threshold", 0.67))
         calibration_frame: pd.DataFrame | None = None
         if run.split == "test" and bool(calibration_cfg.get("enabled", False)):
             source_split = str(calibration_cfg.get("source_split", "validation"))
@@ -123,6 +125,8 @@ class Evaluator:
             calibration_group_by=calibration_group_by,
             calibration_interval_coverage_floors=calibration_interval_coverage_floors,
             calibration_min_group_size=calibration_min_group_size,
+            calibration_regime_score_column=calibration_regime_score_column,
+            calibration_regime_threshold=calibration_regime_threshold,
         )
 
     def _load_matching_run_frame(

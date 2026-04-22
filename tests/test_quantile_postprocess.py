@@ -129,6 +129,41 @@ def test_hourly_grouped_cqr_uses_group_specific_adjustments() -> None:
     assert calibration.adjustments[(1, 0.1, 0.9)].lower_adjustment == 5.0
 
 
+def test_hour_x_regime_grouped_cqr_uses_regime_specific_adjustments() -> None:
+    calibration_frame = _frame(
+        y_true=[10.0, 30.0, 10.0, 30.0],
+        q10=[11.0, 40.0, 11.0, 31.0],
+        q50=[10.0, 30.0, 10.0, 30.0],
+        q90=[10.0, 30.0, 10.0, 30.0],
+    )
+    calibration_frame["ds"] = [
+        pd.Timestamp("2026-01-01 17:00:00"),
+        pd.Timestamp("2026-01-01 17:00:00"),
+        pd.Timestamp("2026-01-01 17:00:00"),
+        pd.Timestamp("2026-01-02 17:00:00"),
+        pd.Timestamp("2026-01-02 17:00:00"),
+        pd.Timestamp("2026-01-02 17:00:00"),
+        pd.Timestamp("2026-01-03 17:00:00"),
+        pd.Timestamp("2026-01-03 17:00:00"),
+        pd.Timestamp("2026-01-03 17:00:00"),
+        pd.Timestamp("2026-01-04 17:00:00"),
+        pd.Timestamp("2026-01-04 17:00:00"),
+        pd.Timestamp("2026-01-04 17:00:00"),
+    ]
+    calibration_frame["spike_score"] = [0.2] * 3 + [0.9] * 3 + [0.2] * 3 + [0.9] * 3
+
+    calibration = fit_conformal_quantile_calibration(
+        calibration_frame,
+        calibration_method="cqr_asymmetric",
+        group_by="hour_x_regime",
+        min_group_size=2,
+        regime_threshold=0.67,
+    )
+
+    assert calibration.adjustments[((17, 0), 0.1, 0.9)].lower_adjustment == 1.0
+    assert calibration.adjustments[((17, 1), 0.1, 0.9)].lower_adjustment == 10.0
+
+
 def test_apply_conformal_quantile_calibration_preserves_monotonicity() -> None:
     frame = _frame(
         y_true=[10.0],
