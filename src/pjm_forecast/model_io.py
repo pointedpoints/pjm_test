@@ -9,6 +9,7 @@ from .models.base import ForecastModel
 from .models.epftoolbox_wrappers import DNNModel, LEARModel
 from .models.nbeatsx import NBEATSxModel
 from .models.seasonal_naive import SeasonalNaiveModel
+from .prediction_contract import normalize_model_prediction_output
 
 
 SNAPSHOT_MANIFEST = "manifest.json"
@@ -36,26 +37,14 @@ def validate_model_prediction_output(
     *,
     future_df: pd.DataFrame,
     model_name: str,
+    expected_quantiles=None,
 ) -> pd.DataFrame:
-    required_columns = ["ds", "y_pred"]
-    missing_columns = [column for column in required_columns if column not in prediction_df.columns]
-    if missing_columns:
-        raise ValueError(f"Model '{model_name}' prediction output is missing required columns: {missing_columns}")
-
-    normalized = prediction_df.loc[:, required_columns].copy()
-    normalized["ds"] = pd.to_datetime(normalized["ds"], utc=False)
-    if normalized["ds"].duplicated().any():
-        raise ValueError(f"Model '{model_name}' prediction output contains duplicate ds timestamps.")
-    if normalized["y_pred"].isna().any():
-        raise ValueError(f"Model '{model_name}' prediction output contains missing y_pred values.")
-
-    expected_ds = future_df["ds"].reset_index(drop=True)
-    actual_ds = normalized["ds"].reset_index(drop=True)
-    if len(actual_ds) != len(expected_ds) or not actual_ds.equals(expected_ds):
-        raise ValueError(
-            f"Model '{model_name}' prediction timestamps do not align and must exactly match the requested future horizon."
-        )
-    return normalized
+    return normalize_model_prediction_output(
+        prediction_df,
+        future_df=future_df,
+        model_name=model_name,
+        expected_quantiles=expected_quantiles,
+    )
 
 
 def save_model_snapshot(model: ForecastModel, *, model_name: str, snapshot_path: Path) -> Path:

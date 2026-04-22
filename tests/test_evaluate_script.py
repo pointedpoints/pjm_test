@@ -33,4 +33,8 @@ def test_workspace_evaluate_discovers_prediction_files_without_filename_regex(tm
     workspace.evaluate("test")
 
     metrics_df = pd.read_csv(workspace.artifacts.metrics("test"))
+    diagnostics_df = pd.read_csv(workspace.artifacts.quantile_diagnostics("test"))
+    scenario_df = pd.read_csv(workspace.artifacts.scenario_diagnostics("test"))
     assert "custom_name_without_contract" in set(metrics_df["run"])
+    assert "custom_name_without_contract" in set(diagnostics_df["run"])
+    assert "custom_name_without_contract" in set(scenario_df["run"])

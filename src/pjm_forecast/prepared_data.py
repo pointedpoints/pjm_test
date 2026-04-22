@@ -11,10 +11,10 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from .config import ProjectConfig
+from .prediction_contract import PREDICTION_COLUMNS, validate_canonical_prediction_frame
 
 
 PANEL_ID_COLUMNS = ["unique_id", "ds"]
-PREDICTION_COLUMNS = ["ds", "y", "y_pred", "model", "split", "seed", "quantile", "metadata"]
 EPF_ALIAS_MAP = {
     "y": "Price",
     "system_load_forecast": "Exogenous 1",
@@ -84,7 +84,63 @@ class FeatureSchema:
 
     def panel_columns(self) -> list[str]:
         columns = ["unique_id", "ds", self.config.target_column]
-        for column in [*self.future_exog_columns(), *self.lag_source_columns()]:
+        for column in self.required_panel_signal_columns():
+            if column not in columns:
+                columns.append(column)
+        return columns
+
+    def derived_ramp_specs(self) -> list[tuple[str, int, str]]:
+        specs: list[tuple[str, int, str]] = []
+        for item in self.config.features.get("derived_ramps", []):
+            source = str(item["source"])
+            lag = int(item.get("lag", 24))
+            name = str(item.get("name", f"{source}_delta_{lag}"))
+            specs.append((source, lag, name))
+        return specs
+
+    def derived_feature_specs(self) -> list[dict[str, object]]:
+        specs: list[dict[str, object]] = []
+        for item in self.config.features.get("derived_features", []):
+            specs.append(dict(item))
+        return specs
+
+    def derived_dependency_columns(self) -> list[str]:
+        derived_names = set(self.derived_feature_columns())
+        calendar_names = set(self.calendar_columns())
+        dependencies: list[str] = []
+
+        for source, _, _ in self.derived_ramp_specs():
+            if source not in dependencies:
+                dependencies.append(source)
+
+        for spec in self.derived_feature_specs():
+            kind = str(spec["kind"])
+            if kind == "degree_day":
+                source = str(spec["source"])
+                if source not in dependencies:
+                    dependencies.append(source)
+                continue
+            if kind == "multiply":
+                for side in [str(spec["left"]), str(spec["right"])]:
+                    if side in derived_names or side in calendar_names:
+                        continue
+                    if side not in dependencies:
+                        dependencies.append(side)
+                continue
+        return dependencies
+
+    def derived_feature_columns(self) -> list[str]:
+        columns = [name for _, _, name in self.derived_ramp_specs()]
+        for spec in self.derived_feature_specs():
+            columns.append(str(spec["name"]))
+        return columns
+
+    def required_panel_signal_columns(self) -> list[str]:
+        derived_columns = set(self.derived_feature_columns())
+        columns: list[str] = []
+        for column in [*self.future_exog_columns(), *self.lag_source_columns(), *self.derived_dependency_columns()]:
+            if column in derived_columns:
+                continue
             if column not in columns:
                 columns.append(column)
         return columns
@@ -130,6 +186,7 @@ class FeatureSchema:
     def feature_columns(self) -> list[str]:
         return [
             *self.panel_columns(),
+            *self.derived_feature_columns(),
             *self.calendar_columns(),
             *self.price_lag_columns(),
             *self.source_lag_columns(),
@@ -179,6 +236,9 @@ class FeatureSchema:
     def prediction_columns(self) -> list[str]:
         return list(PREDICTION_COLUMNS)
 
+    def expected_prediction_quantiles(self, model_name: str) -> list[float]:
+        return self.config.expected_prediction_quantiles(model_name)
+
     def normalize_panel_frame(self, raw_df: pd.DataFrame) -> pd.DataFrame:
         renamed = raw_df.rename(columns=self.raw_column_map())
         missing = [column for column in self.panel_columns()[1:] if column not in renamed.columns]
@@ -205,10 +265,65 @@ class FeatureSchema:
 
         country_holidays = holidays.country_holidays(self.config.features["holiday_country"])
         feature_df["is_holiday"] = feature_df["date"].isin(country_holidays).astype(int)
+        days_to_next_holiday = self._days_to_next_holiday(feature_df["date"])
+        days_since_prev_holiday = self._days_since_prev_holiday(feature_df["date"])
+        days_to_year_end = self._days_to_year_end(feature_df["date"])
+        year_end_window = self._year_end_window(feature_df["date"])
 
         for column_name, period in self.config.features["cyclical"].items():
             encoded = self._encode_cyclical(feature_df[column_name], period=period, prefix=column_name)
             feature_df = pd.concat([feature_df, encoded], axis=1)
+
+        for source_column, lag, name in self.derived_ramp_specs():
+            feature_df[name] = (feature_df[source_column] - feature_df[source_column].shift(lag)).fillna(0.0)
+        for spec in self.derived_feature_specs():
+            name = str(spec["name"])
+            kind = str(spec["kind"])
+            if kind == "degree_day":
+                source = str(spec["source"])
+                base = float(spec["base"])
+                mode = str(spec["mode"])
+                if mode == "heating":
+                    feature_df[name] = (base - feature_df[source]).clip(lower=0.0)
+                elif mode == "cooling":
+                    feature_df[name] = (feature_df[source] - base).clip(lower=0.0)
+                else:
+                    raise ValueError(f"Unsupported derived_features mode: {mode!r}")
+                continue
+            if kind == "multiply":
+                left = str(spec["left"])
+                right = str(spec["right"])
+                feature_df[name] = feature_df[left] * feature_df[right]
+                continue
+            if kind == "sum":
+                inputs = [str(value) for value in spec.get("inputs", [])]
+                if not inputs:
+                    raise ValueError(f"derived_features sum requires at least one input for {name!r}.")
+                feature_df[name] = feature_df[inputs].sum(axis=1)
+                continue
+            if kind == "days_to_next_holiday":
+                feature_df[name] = days_to_next_holiday
+                continue
+            if kind == "days_since_prev_holiday":
+                feature_df[name] = days_since_prev_holiday
+                continue
+            if kind == "days_to_year_end":
+                feature_df[name] = days_to_year_end
+                continue
+            if kind == "year_end_window":
+                feature_df[name] = year_end_window
+                continue
+            if kind == "pre_holiday_window":
+                max_days = int(spec["max_days"])
+                feature_df[name] = (
+                    (days_to_next_holiday > 0.0) & (days_to_next_holiday <= float(max_days))
+                ).astype(float)
+                continue
+            if kind == "hour_indicator":
+                hour = int(spec["hour"])
+                feature_df[name] = (feature_df["hour"] == hour).astype(float)
+                continue
+            raise ValueError(f"Unsupported derived_features kind: {kind!r}")
 
         for lag in self.config.features["price_lags"]:
             feature_df[f"price_lag_{lag}"] = feature_df[self.config.target_column].shift(lag)
@@ -233,7 +348,7 @@ class FeatureSchema:
     def validate_feature_frame(self, feature_df: pd.DataFrame) -> None:
         self._require_columns(feature_df, self.feature_columns(), "feature frame")
         self._validate_ds_series(feature_df["ds"], "feature frame")
-        non_lag_columns = [*self.panel_columns(), *self.calendar_columns()]
+        non_lag_columns = [*self.panel_columns(), *self.derived_feature_columns(), *self.calendar_columns()]
         if feature_df[non_lag_columns].isna().any().any():
             missing = feature_df[non_lag_columns].isna().sum()
             raise ValueError(f"Feature frame contains missing non-lag values: {missing.to_dict()}")
@@ -242,18 +357,22 @@ class FeatureSchema:
         contract = self.nbeatsx_exogenous_contract()
         self._require_columns(feature_df, contract.required_feature_columns(), "nbeatsx feature frame")
 
-    def validate_prediction_frame(self, prediction_df: pd.DataFrame, require_metadata: bool = True) -> None:
+    def validate_prediction_frame(
+        self,
+        prediction_df: pd.DataFrame,
+        require_metadata: bool = True,
+        model_name: str | None = None,
+    ) -> None:
         self._require_columns(prediction_df, self.prediction_columns(), "prediction frame")
-        self._validate_ds_series(prediction_df["ds"], "prediction frame")
-        required_non_null = ["y", "y_pred", "model", "split", "seed"]
-        if prediction_df[required_non_null].isna().any().any():
-            missing = prediction_df[required_non_null].isna().sum()
-            raise ValueError(f"Prediction frame contains missing required values: {missing.to_dict()}")
-        if require_metadata and prediction_df["metadata"].isna().any():
-            raise ValueError("Prediction frame metadata column must be populated for every row.")
-        for column in ["model", "split", "seed"]:
-            if prediction_df[column].nunique(dropna=False) > 1:
-                raise ValueError(f"Prediction frame column '{column}' must be constant within a run.")
+        inferred_model_name = model_name
+        if inferred_model_name is None and "model" in prediction_df.columns and prediction_df["model"].nunique(dropna=False) == 1:
+            inferred_model_name = str(prediction_df["model"].iloc[0])
+        expected_quantiles = [] if inferred_model_name is None else self.expected_prediction_quantiles(inferred_model_name)
+        validate_canonical_prediction_frame(
+            prediction_df,
+            require_metadata=require_metadata,
+            expected_quantiles=expected_quantiles,
+        )
 
     def _require_columns(self, frame: pd.DataFrame, required: list[str], frame_name: str) -> None:
         missing = [column for column in required if column not in frame.columns]
@@ -279,6 +398,77 @@ class FeatureSchema:
             },
             index=series.index,
         )
+
+    def _days_to_next_holiday(self, dates: pd.Series) -> pd.Series:
+        unique_dates = pd.DatetimeIndex(pd.to_datetime(dates.drop_duplicates()).sort_values()).astype("datetime64[ns]")
+        if unique_dates.empty:
+            return pd.Series(index=dates.index, dtype=float)
+
+        min_year = int(unique_dates.min().year) - 1
+        max_year = int(unique_dates.max().year) + 2
+        holiday_index = pd.DatetimeIndex(
+            sorted(
+                pd.Timestamp(value).normalize()
+                for value in holidays.country_holidays(
+                    self.config.features["holiday_country"],
+                    years=range(min_year, max_year + 1),
+                ).keys()
+            )
+        ).astype("datetime64[ns]").unique()
+
+        if holiday_index.empty:
+            return pd.Series(0.0, index=dates.index, dtype=float)
+
+        date_ns = unique_dates.asi8
+        holiday_ns = holiday_index.asi8
+        next_positions = np.searchsorted(holiday_ns, date_ns, side="left")
+        one_day_ns = pd.Timedelta(days=1).value
+        day_values = np.zeros(len(unique_dates), dtype=float)
+        valid = next_positions < len(holiday_ns)
+        day_values[valid] = ((holiday_ns[next_positions[valid]] - date_ns[valid]) // one_day_ns).astype(float)
+        mapping = pd.Series(day_values, index=unique_dates)
+        return dates.map(mapping).astype(float)
+
+    def _days_since_prev_holiday(self, dates: pd.Series) -> pd.Series:
+        unique_dates = pd.DatetimeIndex(pd.to_datetime(dates.drop_duplicates()).sort_values()).astype("datetime64[ns]")
+        if unique_dates.empty:
+            return pd.Series(index=dates.index, dtype=float)
+
+        min_year = int(unique_dates.min().year) - 1
+        max_year = int(unique_dates.max().year) + 2
+        holiday_index = pd.DatetimeIndex(
+            sorted(
+                pd.Timestamp(value).normalize()
+                for value in holidays.country_holidays(
+                    self.config.features["holiday_country"],
+                    years=range(min_year, max_year + 1),
+                ).keys()
+            )
+        ).astype("datetime64[ns]").unique()
+
+        if holiday_index.empty:
+            return pd.Series(0.0, index=dates.index, dtype=float)
+
+        date_ns = unique_dates.asi8
+        holiday_ns = holiday_index.asi8
+        prev_positions = np.searchsorted(holiday_ns, date_ns, side="right") - 1
+        one_day_ns = pd.Timedelta(days=1).value
+        day_values = np.zeros(len(unique_dates), dtype=float)
+        valid = prev_positions >= 0
+        day_values[valid] = ((date_ns[valid] - holiday_ns[prev_positions[valid]]) // one_day_ns).astype(float)
+        mapping = pd.Series(day_values, index=unique_dates)
+        return dates.map(mapping).astype(float)
+
+    def _days_to_year_end(self, dates: pd.Series) -> pd.Series:
+        normalized = pd.to_datetime(dates).dt.normalize()
+        year_end = pd.to_datetime(normalized.dt.year.astype(str) + "-12-31")
+        return ((year_end - normalized).dt.days).astype(float)
+
+    def _year_end_window(self, dates: pd.Series) -> pd.Series:
+        normalized = pd.to_datetime(dates).dt.normalize()
+        month = normalized.dt.month
+        day = normalized.dt.day
+        return (((month == 12) & (day >= 20)) | ((month == 1) & (day <= 3))).astype(float)
 
 
 @dataclass(frozen=True)

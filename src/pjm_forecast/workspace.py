@@ -91,6 +91,12 @@ class ArtifactStore:
     def metrics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_metrics.csv"
 
+    def quantile_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_quantile_diagnostics.csv"
+
+    def scenario_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_scenario_diagnostics.csv"
+
     def dm(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_dm.csv"
 
@@ -119,6 +125,18 @@ class ArtifactStore:
         output_path = self.metrics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_quantile_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.quantile_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.scenario_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
         return output_path
 
     def write_dm(self, split: str, dm_df: pd.DataFrame) -> Path:
@@ -215,6 +233,8 @@ class ArtifactStore:
         copied: list[Path] = []
         for source in [
             self.metrics(split),
+            self.quantile_diagnostics(split),
+            self.scenario_diagnostics(split),
             self.dm(split),
             self.hourly_mae_plot(split),
             self.high_vol_week_plot(split),
@@ -399,6 +419,7 @@ class Workspace:
         validation_days = get_daily_split_days(feature_df, split_boundaries, split_name="validation")
         tuning_cfg = self.config.tuning
         use_ensemble_in_tuning = bool(tuning_cfg.get("use_ensemble_in_tuning", False))
+        metric_name = str(tuning_cfg.get("metric", "mae")).lower()
 
         def objective(trial: optuna.Trial) -> float:
             self.config.models["nbeatsx"]["input_size"] = trial.suggest_categorical(
@@ -441,7 +462,7 @@ class Workspace:
                 model_name="nbeatsx",
                 seed=self.config.project["benchmark_seed"],
             )
-            return compute_metrics(predictions)["mae"]
+            return float(compute_metrics(predictions)[metric_name])
 
         storage = tuning_cfg.get("optuna_storage")
         study_name = tuning_cfg.get("optuna_study_name", "nbeatsx_tuning")
@@ -465,9 +486,14 @@ class Workspace:
         forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=split)
 
         for model_name in self.config.backtest["benchmark_models"]:
-            if model_name == "nbeatsx":
+            model_type = str(self.config.models[model_name].get("type", "")).lower()
+            if model_type in {"nbeatsx", "nhits"}:
                 self.schema().validate_nbeatsx_feature_frame(feature_df)
-            seeds = self.config.project["random_seeds"] if model_name == "nbeatsx" else [self.config.project["benchmark_seed"]]
+            seeds = (
+                self.config.project["random_seeds"]
+                if model_type in {"nbeatsx", "nhits"}
+                else [self.config.project["benchmark_seed"]]
+            )
             for seed in seeds:
                 output_path = self.artifacts.prediction(model_name, split, seed)
                 if output_path.exists():
@@ -487,6 +513,8 @@ class Workspace:
         evaluator = Evaluator(schema=self.schema(), artifacts=self.artifacts)
         bundle = evaluator.load_runs(split)
         metrics_df = evaluator.compute_metrics(bundle)
+        evaluator.compute_quantile_diagnostics(bundle)
+        evaluator.compute_scenario_diagnostics(bundle)
         evaluator.compute_dm(bundle)
         evaluator.render_plots(bundle, metrics_df, split)
 

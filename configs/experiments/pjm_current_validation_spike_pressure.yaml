@@ -1,23 +1,23 @@
 project:
-  name: "pjm_dayahead_current_processed"
+  name: "pjm_current_validation_spike_pressure"
   random_seeds: [7]
   benchmark_seed: 7
   directories:
-    raw_data_dir: "data/raw"
-    processed_data_dir: "data/processed_current"
-    artifact_dir: "artifacts_current"
-    hyperparameter_dir: "artifacts_current/hyperparameters"
-    prediction_dir: "artifacts_current/predictions"
-    metrics_dir: "artifacts_current/metrics"
-    plots_dir: "artifacts_current/plots"
-    report_dir: "artifacts_current/report"
+    raw_data_dir: "../data/raw"
+    processed_data_dir: "../data/processed_ablation/spike_pressure"
+    artifact_dir: "../artifacts_ablation/spike_pressure"
+    hyperparameter_dir: "../artifacts_current/hyperparameters"
+    prediction_dir: "../artifacts_ablation/spike_pressure/predictions"
+    metrics_dir: "../artifacts_ablation/spike_pressure/metrics"
+    plots_dir: "../artifacts_ablation/spike_pressure/plots"
+    report_dir: "../artifacts_ablation/spike_pressure/report"
 
 dataset:
   source_type: "official_weather_ready"
   dataset_name: "PJM"
   unique_id: "PJM_COMED"
   source_url: "https://zenodo.org/records/4624805/files/PJM.csv"
-  local_csv_path: "data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
+  local_csv_path: "../data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
   source_filename: "PJM.csv"
   start_date: "2021-01-01"
   end_date: "2026-03-31"
@@ -38,7 +38,10 @@ features:
     - "heating_degree_18"
     - "cooling_degree_22"
     - "load_cooling_pressure"
-  price_lags: [24]
+    - "load_heating_pressure"
+    - "cooling_pressure_excess_q95"
+    - "heating_pressure_excess_q95"
+  price_lags: [24, 168]
   lag_sources:
     - "zonal_load_forecast"
   source_lags: [24]
@@ -57,6 +60,20 @@ features:
       left: "zonal_load_forecast"
       right: "cooling_degree_22"
       name: "load_cooling_pressure"
+    - kind: "multiply"
+      left: "zonal_load_forecast"
+      right: "heating_degree_18"
+      name: "load_heating_pressure"
+    - kind: "degree_day"
+      source: "load_cooling_pressure"
+      mode: "cooling"
+      base: 110857.4192
+      name: "cooling_pressure_excess_q95"
+    - kind: "degree_day"
+      source: "load_heating_pressure"
+      mode: "cooling"
+      base: 345470.8326
+      name: "heating_pressure_excess_q95"
   cyclical:
     hour: 24
     day_of_week: 7
@@ -72,7 +89,7 @@ weather:
   provider: "open_meteo_historical_forecast"
   model: "best_match"
   timezone: "America/Chicago"
-  cache_dir: "data/raw/weather"
+  cache_dir: "../data/raw/weather"
   precipitation_area_fraction_threshold_mm: 0.1
   output_columns:
     - "weather_temp_mean"
@@ -121,7 +138,7 @@ backtest:
 tuning:
   model_name: "nbeatsx"
   n_trials: 5
-  metric: "pinball"
+  metric: "mae"
   use_ensemble_in_tuning: false
   search_space:
     input_size: [168, 336, 504, 672]
@@ -146,17 +163,12 @@ models:
     scaler_type: "identity"
     target_transform: "asinh_q95"
     exog_scaler: "zscore"
-    loss_name: "huber_mqloss"
-    loss_delta: 0.75
-    quantiles: [0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.99]
     early_stop_patience_steps: 10
     val_check_steps: 50
     validation_size: 168
     windows_batch_size: 512
     ensemble_aggregation: "mean"
-    ensemble_members:
-      - seed_offset: 0
-      - seed_offset: 11
+    ensemble_members: []
     stack_types: ["trend", "seasonality", "identity"]
     mlp_units:
       - [768, 768]
@@ -164,28 +176,9 @@ models:
       - [768, 768]
 
 report:
-  primary_metric: "pinball"
-  auxiliary_metrics: ["mae", "rmse", "smape", "hourly_mae", "dm"]
+  primary_metric: "mae"
+  auxiliary_metrics: ["rmse", "smape", "hourly_mae", "dm"]
   include_high_volatility_week: true
-  quantile_postprocess:
-    monotonic: true
-    calibration:
-      enabled: true
-      source_split: "validation"
-      method: "cqr_asymmetric"
-      group_by: "hour"
-      min_group_size: 24
-      interval_coverage_floors:
-        "0.10-0.90": 0.76
-        "0.05-0.95": 0.86
-        "0.01-0.99": 0.95
-  scenario_evaluation:
-    enabled: true
-    source_split: "validation"
-    copula_family: "student_t"
-    dof_grid: [3.0, 5.0, 7.0, 10.0]
-    n_samples: 256
-    random_seed: 7
 
 retrieval:
   enabled: false
