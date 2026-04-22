@@ -145,6 +145,18 @@ def test_load_config_rejects_invalid_hour_indicator(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_load_config_rejects_invalid_prior_day_price_stat(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [{"kind": "prior_day_price_stat", "source": "y", "stat": "median", "name": "prior_day_price_median"}],
+        ),
+    )
+    with pytest.raises(ValueError, match="prior_day_price_stat"):
+        load_config(config_path)
+
+
 def test_load_config_rejects_invalid_pre_holiday_window(tmp_path: Path) -> None:
     config_path = _write_temp_config(
         tmp_path,
@@ -219,6 +231,22 @@ def test_load_config_allows_quantile_weights_for_neuralforecast_models(tmp_path:
     assert config.nbeatsx_runtime_config()["quantile_weights"] == [1.0, 1.0, 3.0]
 
 
+def test_load_config_allows_quantile_deltas_and_monotonicity_penalty(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "huber_mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("loss_delta", 0.75),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["models"]["nbeatsx"].__setitem__("quantile_deltas", [1.25, 0.75, 1.25]),
+            payload["models"]["nbeatsx"].__setitem__("monotonicity_penalty", 0.05),
+        ),
+    )
+    runtime_cfg = load_config(config_path).nbeatsx_runtime_config()
+    assert runtime_cfg["quantile_deltas"] == [1.25, 0.75, 1.25]
+    assert runtime_cfg["monotonicity_penalty"] == 0.05
+
+
 def test_load_config_rejects_invalid_quantile_weights_length(tmp_path: Path) -> None:
     config_path = _write_temp_config(
         tmp_path,
@@ -229,6 +257,32 @@ def test_load_config_rejects_invalid_quantile_weights_length(tmp_path: Path) -> 
         ),
     )
     with pytest.raises(ValueError, match="quantile_weights"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_invalid_quantile_deltas_length(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "huber_mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["models"]["nbeatsx"].__setitem__("quantile_deltas", [0.75, 1.25]),
+        ),
+    )
+    with pytest.raises(ValueError, match="quantile_deltas"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_negative_monotonicity_penalty(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["models"]["nbeatsx"].__setitem__("loss_name", "huber_mqloss"),
+            payload["models"]["nbeatsx"].__setitem__("quantiles", [0.1, 0.5, 0.9]),
+            payload["models"]["nbeatsx"].__setitem__("monotonicity_penalty", -0.01),
+        ),
+    )
+    with pytest.raises(ValueError, match="monotonicity_penalty"):
         load_config(config_path)
 
 
@@ -252,6 +306,8 @@ def test_runtime_model_config_supports_named_nhits_models(tmp_path: Path) -> Non
                 "loss_delta": 0.75,
                 "quantiles": [0.1, 0.5, 0.9],
                 "quantile_weights": [1.0, 1.0, 3.0],
+                "quantile_deltas": [1.25, 0.75, 1.25],
+                "monotonicity_penalty": 0.05,
             },
         ),
     )
@@ -260,6 +316,8 @@ def test_runtime_model_config_supports_named_nhits_models(tmp_path: Path) -> Non
     assert runtime_cfg["type"] == "nhits"
     assert runtime_cfg["loss_name"] == "huber_mqloss"
     assert runtime_cfg["quantile_weights"] == [1.0, 1.0, 3.0]
+    assert runtime_cfg["quantile_deltas"] == [1.25, 0.75, 1.25]
+    assert runtime_cfg["monotonicity_penalty"] == 0.05
 
 
 def test_load_config_rejects_cqr_quantiles_without_symmetric_pairs(tmp_path: Path) -> None:
