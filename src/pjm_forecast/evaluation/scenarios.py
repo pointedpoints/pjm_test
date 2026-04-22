@@ -24,16 +24,27 @@ def compute_scenario_diagnostics(
     n_samples: int = 256,
     dof_grid: list[float] | None = None,
     random_seed: int = 7,
+    tail_policy: str = "flat",
 ) -> dict[str, float | bool | str]:
-    diagnostics: dict[str, float | bool | str] = {"has_scenarios": False, "family": str(family).lower()}
+    diagnostics: dict[str, float | bool | str] = {
+        "has_scenarios": False,
+        "family": str(family).lower(),
+        "tail_policy": str(tail_policy).lower(),
+    }
     if train_predictions is None or not is_quantile_prediction_frame(train_predictions) or not is_quantile_prediction_frame(eval_predictions):
         diagnostics.update(_empty_scenario_metrics())
         return diagnostics
 
-    copula, train_panel = fit_copula_from_predictions(train_predictions, family=family, dof_grid=dof_grid)
-    eval_panel = build_quantile_surface_panel(eval_predictions)
+    copula, train_panel = fit_copula_from_predictions(
+        train_predictions,
+        family=family,
+        dof_grid=dof_grid,
+        tail_policy=tail_policy,
+    )
+    eval_panel = build_quantile_surface_panel(eval_predictions, tail_policy=tail_policy)
     diagnostics["has_scenarios"] = True
     diagnostics["family"] = "student_t" if isinstance(copula, StudentTCopula) else "gaussian"
+    diagnostics["tail_policy"] = str(tail_policy).lower()
     diagnostics["train_days"] = float(len(train_panel.forecast_days))
     diagnostics["eval_days"] = float(len(eval_panel.forecast_days))
     diagnostics["horizon"] = float(eval_panel.horizon)

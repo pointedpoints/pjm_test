@@ -415,3 +415,23 @@ def test_load_config_rejects_unsupported_scenario_copula_family(tmp_path: Path) 
     )
     with pytest.raises(ValueError, match="Unsupported report.scenario_evaluation.copula_family"):
         load_config(config_path)
+
+
+def test_load_config_rejects_unsupported_scenario_tail_policy(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "scenario_evaluation",
+                {
+                    "enabled": True,
+                    "source_split": "validation",
+                    "copula_family": "student_t",
+                    "tail_policy": "gpd",
+                },
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="Unsupported report.scenario_evaluation.tail_policy"):
+        load_config(config_path)

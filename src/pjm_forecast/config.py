@@ -19,6 +19,7 @@ TUNING_METRICS = {"mae", "rmse", "smape", "pinball"}
 QUANTILE_CALIBRATION_METHODS = {"cqr", "cqr_asymmetric"}
 QUANTILE_CALIBRATION_GROUP_BY = {"hour"}
 SCENARIO_COPULA_FAMILIES = {"gaussian", "student_t"}
+SCENARIO_TAIL_POLICIES = {"flat", "linear"}
 
 
 @dataclass(slots=True)
@@ -486,6 +487,9 @@ class ProjectConfig:
         family = str(scenario_cfg.get("copula_family", "student_t"))
         if family not in SCENARIO_COPULA_FAMILIES:
             raise ValueError(f"Unsupported report.scenario_evaluation.copula_family={family!r}.")
+        tail_policy = str(scenario_cfg.get("tail_policy", "flat"))
+        if tail_policy not in SCENARIO_TAIL_POLICIES:
+            raise ValueError(f"Unsupported report.scenario_evaluation.tail_policy={tail_policy!r}.")
         n_samples = scenario_cfg.get("n_samples", 256)
         if not isinstance(n_samples, int) or n_samples <= 0:
             raise ValueError("report.scenario_evaluation.n_samples must be a positive integer.")

@@ -199,7 +199,7 @@ class StudentTCopula(BaseCopula):
         return float(np.sum(joint - marginal))
 
 
-def build_quantile_surface_panel(predictions: pd.DataFrame) -> QuantileSurfacePanel:
+def build_quantile_surface_panel(predictions: pd.DataFrame, *, tail_policy: str = "flat") -> QuantileSurfacePanel:
     grouped_days: list[pd.Timestamp] = []
     grouped_observations: list[np.ndarray] = []
     grouped_surfaces: list[tuple[QuantileSurface, ...]] = []
@@ -208,7 +208,7 @@ def build_quantile_surface_panel(predictions: pd.DataFrame) -> QuantileSurfacePa
     forecast_days = _forecast_day_series(predictions)
     for forecast_day, day_frame in predictions.groupby(forecast_days, sort=True):
         forecast_day = pd.Timestamp(forecast_day).normalize()
-        surfaces = quantile_surfaces_from_frame(day_frame)
+        surfaces = quantile_surfaces_from_frame(day_frame, tail_policy=tail_policy)
         ds_index = pd.DatetimeIndex(sorted(surfaces))
         offsets = pd.TimedeltaIndex(ds_index - forecast_day)
         if expected_offsets is None:
@@ -235,8 +235,9 @@ def fit_copula_from_predictions(
     *,
     family: str = "student_t",
     dof_grid: list[float] | np.ndarray | None = None,
+    tail_policy: str = "flat",
 ) -> tuple[BaseCopula, QuantileSurfacePanel]:
-    panel = build_quantile_surface_panel(predictions)
+    panel = build_quantile_surface_panel(predictions, tail_policy=tail_policy)
     uniforms = panel.pseudo_observations()
     family_name = str(family).lower()
     if family_name == "gaussian":

@@ -39,8 +39,25 @@ def test_quantile_surface_interpolates_cdf_and_ppf() -> None:
     surface = QuantileSurface.from_quantiles([0.1, 0.5, 0.9], [8.0, 10.0, 12.0])
     assert surface.ppf(0.5) == 10.0
     assert surface.ppf(0.3) == 9.0
+    assert surface.ppf(0.99) == 12.0
     assert surface.cdf(10.0) == 0.5
     assert surface.cdf(9.0) == pytest.approx(0.3)
+
+
+def test_quantile_surface_linear_tail_extrapolates_beyond_outer_knots() -> None:
+    surface = QuantileSurface.from_quantiles(
+        [0.1, 0.5, 0.9],
+        [8.0, 10.0, 12.0],
+        tail_policy="linear",
+    )
+
+    assert surface.ppf(0.95) > 12.0
+    assert surface.ppf(0.99) > surface.ppf(0.95)
+    assert surface.ppf(0.05) < 8.0
+    assert surface.cdf(surface.ppf(0.95)) == pytest.approx(0.95)
+    assert surface.cdf(surface.ppf(0.05)) == pytest.approx(0.05)
+    values = surface.ppf(np.array([0.9, 0.95, 0.99]))
+    assert np.all(np.diff(values) > 0.0)
 
 
 def test_quantile_surface_interval_and_sampling() -> None:
@@ -62,9 +79,10 @@ def test_quantile_surface_crps_and_pit_are_available() -> None:
 
 def test_quantile_surface_helpers_build_per_timestamp_surfaces() -> None:
     frame = _frame()
-    surfaces = quantile_surfaces_from_frame(frame)
+    surfaces = quantile_surfaces_from_frame(frame, tail_policy="linear")
     assert list(surfaces) == [pd.Timestamp("2026-01-01 00:00:00"), pd.Timestamp("2026-01-01 01:00:00")]
     assert surfaces[pd.Timestamp("2026-01-01 00:00:00")].ppf(0.5) == 10.0
+    assert surfaces[pd.Timestamp("2026-01-01 00:00:00")].tail_policy == "linear"
 
 
 def test_quantile_surface_helpers_compute_crps_and_pit_summary() -> None:
