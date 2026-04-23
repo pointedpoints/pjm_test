@@ -270,3 +270,96 @@ Next action:
   hour×regime CQR check;
 - compare test post-CQR coverage and scenario path metrics before considering a
   gated blend.
+
+## Test Split Spike-Regime Check
+
+Configs:
+
+- `configs/experiments/pjm_current_test_nhits_tail_grid_weighted_long_linear_tail.yaml`
+- `configs/experiments/pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml`
+- `configs/experiments/pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml`
+
+The test check separates two meanings of "add spike regime":
+
+- **model-input branch**:
+  `nhits_tail_grid_weighted_spike_regime` adds `spike_score` to NHITS future
+  exogenous inputs and uses `hour_x_regime` CQR.
+- **postprocess-only branch**:
+  `nhits_tail_grid_weighted_long_spike_context_hour_regime` keeps the
+  `nhits_tail_grid_weighted_long` model body and exogenous inputs unchanged.
+  It only carries `spike_score` in prediction frames so validation-fit CQR can
+  apply `hour_x_regime` adjustments on test.
+
+Commands:
+
+```powershell
+.venv\Scripts\python.exe scripts\backtest_all_models.py --config configs\experiments\pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml --split test
+.venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_validation_nhits_tail_grid_weighted_spike_regime.yaml --split test
+
+.venv\Scripts\python.exe scripts\backtest_all_models.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_linear_tail.yaml --split test
+.venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_linear_tail.yaml --split test
+
+.venv\Scripts\python.exe scripts\prepare_data.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml
+.venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml --split test
+```
+
+For the postprocess-only branch, the test run reused the already completed
+`nhits_tail_grid_weighted_long` validation/test prediction values and joined
+`spike_score` by `ds` into an isolated prediction directory. This avoids
+retraining an identical model and tests the intended intervention: calibration
+context only. A threshold sweep showed that `regime_threshold=0.50` was more
+stable than the initial `0.67`; the committed postprocess-only config uses
+`0.50`.
+
+Test quantile results:
+
+| run | post pinball | post CRPS | post cov80 | post cov90 | post cov98 | post width98 | post q99 exceed | post worst q99 under |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| weighted_long, monotonic only | 3.4478 | 8.4748 | 64.15% | 77.26% | 92.42% | 55.96 | 5.11% | 375.31 |
+| weighted_long, hour CQR | 3.2922 | 8.2522 | 77.12% | 86.55% | 96.07% | 69.15 | 2.23% | 329.19 |
+| weighted_long, hour x regime CQR, t=0.50 | 3.2729 | 8.2637 | 78.47% | 88.13% | 96.99% | 93.98 | 1.90% | 307.75 |
+| spike_score as model input, hour x regime CQR, t=0.67 | 3.8485 | 9.4282 | 77.14% | 86.24% | 96.23% | 129.09 | 2.67% | 226.71 |
+
+Test linear-tail scenario diagnostics:
+
+| run | energy | variogram | path mean MAE | daily max abs | daily spread abs | daily ramp abs | Spearman corr MAE |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| weighted_long, monotonic only | 53.5363 | 742.9189 | 10.9344 | 22.9972 | 22.6368 | 12.6740 | 0.0602 |
+| weighted_long, hour CQR | 51.8432 | 717.6055 | 10.8655 | 21.6868 | 21.8451 | 12.7064 | 0.0536 |
+| weighted_long, hour x regime CQR, t=0.50 | 51.6807 | 716.5002 | 10.8920 | 21.6615 | 23.0905 | 14.0468 | 0.0544 |
+| spike_score as model input, hour x regime CQR, t=0.67 | 59.7035 | 979.4209 | 17.0333 | 65.5879 | 66.9806 | 49.3485 | 0.0528 |
+
+Spike-day post metrics were computed on the top 10% test days by realized daily
+maximum price (`daily max >= 118.6155`, 37 days):
+
+| run | daily max abs | daily spread abs | daily ramp abs | p50 hourly MAE | q99 exceed | q99 excess mean | q99 worst under |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| weighted_long, monotonic only | 119.8610 | 123.4879 | 80.7027 | 37.5152 | 16.55% | 10.4575 | 375.31 |
+| weighted_long, hour CQR | 119.6861 | 123.3130 | 80.7174 | 37.5024 | 12.95% | 7.9739 | 329.19 |
+| weighted_long, hour x regime CQR, t=0.50 | 119.6237 | 123.2506 | 80.7199 | 37.4816 | 8.11% | 4.9609 | 307.75 |
+| spike_score as model input, hour x regime CQR, t=0.67 | 109.0744 | 98.2745 | 71.7545 | 45.4585 | 10.81% | 6.6108 | 226.71 |
+
+Interpretation:
+
+The first spike-regime implementation overreached by feeding `spike_score` into
+NHITS. On test it improves some spike-day shape metrics, but it damages global
+pinball, CRPS, scenario path scores, and p50 hourly MAE. It should remain a
+targeted branch, not the main line.
+
+The cleaner postprocess-only branch is the better immediate path. Keeping
+`nhits_tail_grid_weighted_long` unchanged and using `spike_score` only for CQR
+improves test pinball versus monotonic-only baseline and versus hour-only CQR.
+It also materially reduces q99 exceedance and worst q99 underprediction on
+spike days. The tradeoff is wider 98% intervals and weaker daily spread/ramp
+scenario scores than hour-only CQR.
+
+Next action:
+
+- promote the postprocess-only spike context config as the next targeted test
+  branch;
+- do not promote the model-input spike branch globally;
+- tune `spike_score` and `regime_threshold` on validation/calibration splits
+  before treating the `t=0.50` test sensitivity as final evidence;
+- next model-side spike work should use a gated/blended p50 or classifier path,
+  not unconditional inclusion of `spike_score` in all NHITS future exogenous
+  inputs.
