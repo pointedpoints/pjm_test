@@ -95,6 +95,11 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - `configs/experiments/` contains reproducible experiment branches. Keep these
   config-driven and avoid changing canonical behavior unless an experiment has
   been promoted.
+- `scripts/inject_prediction_context.py` can copy existing prediction parquet
+  files into a new prediction directory while joining context columns from the
+  configured feature store by `ds`. Use it for postprocess-only branches that
+  reuse a baseline model body but need calibration context such as
+  `spike_score`.
 - `docs/experiments/` records small human-readable summaries for experiment
   decisions. Generated prediction, metrics, plot, and scenario artifacts remain
   under `artifacts*` directories and should not be treated as source of truth.

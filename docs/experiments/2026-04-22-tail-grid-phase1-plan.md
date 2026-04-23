@@ -300,12 +300,15 @@ Commands:
 .venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_linear_tail.yaml --split test
 
 .venv\Scripts\python.exe scripts\prepare_data.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml
+.venv\Scripts\python.exe scripts\inject_prediction_context.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml --source-prediction-dir artifacts_tmp\nhits_tail_grid_weighted_long\predictions --output-prediction-dir artifacts_tmp\nhits_tail_grid_weighted_long_spike_context\predictions --context-columns spike_score --splits validation test --models nhits_tail_grid_weighted_long --seeds 7 --overwrite
 .venv\Scripts\python.exe scripts\evaluate_and_plot.py --config configs\experiments\pjm_current_test_nhits_tail_grid_weighted_long_spike_context_hour_regime.yaml --split test
 ```
 
 For the postprocess-only branch, the test run reused the already completed
-`nhits_tail_grid_weighted_long` validation/test prediction values and joined
-`spike_score` by `ds` into an isolated prediction directory. This avoids
+`nhits_tail_grid_weighted_long` validation/test prediction values and injected
+`spike_score` by `ds` into an isolated prediction directory with
+`scripts/inject_prediction_context.py`. The tool validates both source and
+enriched prediction contracts and fails on missing context values. This avoids
 retraining an identical model and tests the intended intervention: calibration
 context only. A threshold sweep showed that `regime_threshold=0.50` was more
 stable than the initial `0.67`; the committed postprocess-only config uses
