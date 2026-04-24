@@ -10,6 +10,9 @@ from pjm_forecast.config import ProjectConfig
 from pjm_forecast.prepared_data import FeatureSchema
 
 
+PREDICTION_CONTRACT_COLUMNS = {"ds", "y", "y_pred", "model", "split", "seed", "quantile", "metadata"}
+
+
 @dataclass(frozen=True)
 class ContextInjectionResult:
     source_path: Path
@@ -40,9 +43,7 @@ def inject_prediction_context_dir(
     if not source_dir.is_dir():
         raise ValueError(f"Source prediction path is not a directory: {source_dir}")
 
-    context_column_list = [str(column) for column in context_columns]
-    if not context_column_list:
-        raise ValueError("At least one context column is required.")
+    context_column_list = _normalize_context_columns(context_columns)
 
     requested_splits = {str(split) for split in splits}
     if not requested_splits:
@@ -56,12 +57,10 @@ def inject_prediction_context_dir(
 
     results: list[ContextInjectionResult] = []
     for source_path in sorted(source_dir.glob("*.parquet")):
-        metadata = pd.read_parquet(source_path, columns=["model", "split", "seed"])
-        if metadata.empty:
+        metadata = _load_prediction_metadata(source_path)
+        if metadata is None:
             continue
-        model = str(metadata["model"].iloc[0])
-        split = str(metadata["split"].iloc[0])
-        seed = int(metadata["seed"].iloc[0])
+        model, split, seed = metadata
         if split not in requested_splits:
             continue
         if requested_models is not None and model not in requested_models:
@@ -112,7 +111,7 @@ def inject_prediction_context_frame(
     context_columns: Iterable[str],
     replace_existing_context: bool = False,
 ) -> pd.DataFrame:
-    context_column_list = [str(column) for column in context_columns]
+    context_column_list = _normalize_context_columns(context_columns)
     existing = [column for column in context_column_list if column in prediction_frame.columns]
     if existing and not replace_existing_context:
         raise ValueError(
@@ -153,8 +152,41 @@ def _load_context_frame(config: ProjectConfig, context_columns: list[str]) -> pd
     if not feature_store_path.exists():
         raise FileNotFoundError(f"Feature store does not exist: {feature_store_path}")
     columns = ["ds", *context_columns]
-    feature_frame = pd.read_parquet(feature_store_path)
-    missing = [column for column in columns if column not in feature_frame.columns]
-    if missing:
-        raise ValueError(f"Feature store {feature_store_path} is missing context columns: {missing}")
-    return feature_frame.loc[:, columns].copy()
+    try:
+        return pd.read_parquet(feature_store_path, columns=columns).copy()
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Feature store {feature_store_path} is missing context columns: {columns}") from exc
+
+
+def _normalize_context_columns(context_columns: Iterable[str]) -> list[str]:
+    normalized = [str(column) for column in context_columns]
+    if not normalized:
+        raise ValueError("At least one context column is required.")
+
+    duplicates = sorted({column for column in normalized if normalized.count(column) > 1})
+    if duplicates:
+        raise ValueError(f"Context columns must be unique; duplicates: {duplicates}")
+
+    reserved = [column for column in normalized if column in PREDICTION_CONTRACT_COLUMNS]
+    if reserved:
+        raise ValueError(f"Context columns cannot use prediction contract columns: {reserved}")
+    return normalized
+
+
+def _load_prediction_metadata(source_path: Path) -> tuple[str, str, int] | None:
+    try:
+        metadata = pd.read_parquet(source_path, columns=["model", "split", "seed"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Prediction file {source_path} is missing required metadata columns: ['model', 'split', 'seed']") from exc
+
+    if metadata.empty:
+        return None
+
+    mixed_columns = [
+        column for column in ["model", "split", "seed"]
+        if metadata[column].nunique(dropna=False) != 1
+    ]
+    if mixed_columns:
+        raise ValueError(f"Prediction file {source_path} has mixed metadata values in columns: {mixed_columns}")
+
+    return str(metadata["model"].iloc[0]), str(metadata["split"].iloc[0]), int(metadata["seed"].iloc[0])
