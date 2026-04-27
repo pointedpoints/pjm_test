@@ -139,6 +139,33 @@ def test_q50_weight_grid_config_only_changes_median_quantile_weight() -> None:
         assert left_weights == right_weights
 
 
+def test_q50_weight_hour_cqr_grid_config_uses_current_postprocess_contract() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_validation_nhits_q50_weight_hour_cqr.yaml"))
+    base_cfg = config.runtime_model_config("nhits_q50w100_hour_cqr")
+    q50w125_cfg = config.runtime_model_config("nhits_q50w125_hour_cqr")
+    q50w150_cfg = config.runtime_model_config("nhits_q50w150_hour_cqr")
+    median_index = base_cfg["quantiles"].index(0.5)
+    postprocess_cfg = config.report["quantile_postprocess"]
+
+    assert config.backtest["benchmark_models"] == [
+        "nhits_q50w100_hour_cqr",
+        "nhits_q50w125_hour_cqr",
+        "nhits_q50w150_hour_cqr",
+    ]
+    assert config.project["directories"]["artifact_dir"] == "../artifacts_phase3/q50_weight_hour_cqr"
+    assert "spike_score" not in config.features["future_exog"]
+    assert base_cfg["quantile_weights"][median_index] == 1.0
+    assert q50w125_cfg["quantile_weights"][median_index] == 1.25
+    assert q50w150_cfg["quantile_weights"][median_index] == 1.5
+    assert postprocess_cfg["monotonic"] is True
+    assert postprocess_cfg["median_bias"]["enabled"] is False
+    assert postprocess_cfg["median_bias"]["group_by"] == "hour"
+    assert postprocess_cfg["calibration"]["enabled"] is True
+    assert postprocess_cfg["calibration"]["group_by"] == "hour"
+    assert postprocess_cfg["calibration"]["regime_score_column"] == "spike_score"
+    assert config.report["scenario_evaluation"]["enabled"] is False
+
+
 def test_q50w150_test_candidate_uses_canonical_cqr_contract() -> None:
     config = load_config(Path("configs/experiments/pjm_current_test_nhits_q50w150.yaml"))
     runtime_cfg = config.runtime_model_config("nhits_q50w150")
