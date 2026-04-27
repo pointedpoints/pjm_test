@@ -94,6 +94,9 @@ class ArtifactStore:
     def regime_metrics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_regime_metrics.csv"
 
+    def spike_score_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_spike_score_diagnostics.csv"
+
     def scenario_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_scenario_diagnostics.csv"
 
@@ -137,6 +140,12 @@ class ArtifactStore:
         output_path = self.regime_metrics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         regime_metrics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.spike_score_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
         return output_path
 
     def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
@@ -224,6 +233,7 @@ class ArtifactStore:
             self.metrics(split),
             self.quantile_diagnostics(split),
             self.regime_metrics(split),
+            self.spike_score_diagnostics(split),
             self.scenario_diagnostics(split),
             self.dm(split),
             self.hourly_mae_plot(split),
@@ -498,6 +508,7 @@ class Workspace:
         metrics_df = evaluator.compute_metrics(bundle)
         evaluator.compute_quantile_diagnostics(bundle)
         evaluator.compute_regime_metrics(bundle)
+        evaluator.compute_spike_score_diagnostics(bundle)
         evaluator.compute_scenario_diagnostics(bundle)
         evaluator.compute_dm(bundle)
         evaluator.render_plots(bundle, metrics_df, split)

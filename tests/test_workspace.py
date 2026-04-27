@@ -106,6 +106,9 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.quantile_diagnostics("test") == (
         tmp_path / "run" / "artifacts" / "metrics" / "test_quantile_diagnostics.csv"
     ).resolve()
+    assert workspace.artifacts.spike_score_diagnostics("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_spike_score_diagnostics.csv"
+    ).resolve()
     assert workspace.artifacts.scenario_diagnostics("test") == (
         tmp_path / "run" / "artifacts" / "metrics" / "test_scenario_diagnostics.csv"
     ).resolve()
@@ -207,15 +210,18 @@ def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Pat
     assert workspace.artifacts.prediction("seasonal_naive", "test", 7).exists()
     assert workspace.artifacts.metrics("test").exists()
     assert workspace.artifacts.quantile_diagnostics("test").exists()
+    assert workspace.artifacts.spike_score_diagnostics("test").exists()
     assert workspace.artifacts.scenario_diagnostics("test").exists()
     assert workspace.artifacts.dm("test").exists()
     assert workspace.artifacts.hourly_mae_plot("test").exists()
     assert workspace.artifacts.high_vol_week_plot("test").exists()
     assert workspace.artifacts.report_asset("test_metrics.csv") in copied
     assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in copied
+    assert workspace.artifacts.report_asset("test_spike_score_diagnostics.csv") in copied
     assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in copied
     assert workspace.artifacts.report_asset("test_metrics.csv") in rebuilt
     assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in rebuilt
+    assert workspace.artifacts.report_asset("test_spike_score_diagnostics.csv") in rebuilt
     assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in rebuilt
 
 

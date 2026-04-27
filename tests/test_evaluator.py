@@ -51,6 +51,11 @@ class _Artifacts:
         regime_metrics_df.to_csv(path, index=False)
         return path
 
+    def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        path = self.root / f"{split}_spike_score_diagnostics.csv"
+        diagnostics_df.to_csv(path, index=False)
+        return path
+
     def write_dm(self, split: str, dm_df: pd.DataFrame) -> Path:
         path = self.root / f"{split}_dm.csv"
         dm_df.to_csv(path, index=False)
@@ -172,6 +177,7 @@ def test_evaluator_writes_quantile_diagnostics_for_raw_and_post_frames(tmp_path:
     evaluator.compute_metrics(bundle)
     diagnostics_df = evaluator.compute_quantile_diagnostics(bundle)
     regime_df = evaluator.compute_regime_metrics(bundle)
+    spike_df = evaluator.compute_spike_score_diagnostics(bundle)
     scenario_df = evaluator.compute_scenario_diagnostics(bundle)
 
     quantile_row = diagnostics_df.loc[diagnostics_df["run"] == "quantile_dummy_test_seed7"].iloc[0]
@@ -186,10 +192,12 @@ def test_evaluator_writes_quantile_diagnostics_for_raw_and_post_frames(tmp_path:
     assert np.isnan(point_row["post_coverage_80"])
     assert {"all", "normal", "daily_max"}.issubset(set(regime_df["regime"]))
     assert "p50_mae" in set(regime_df.columns)
+    assert "has_spike_score" in set(spike_df.columns)
     assert bool(scenario_row["has_scenarios"]) is True
     assert scenario_row["energy_score"] >= 0.0
     assert (tmp_path / "test_quantile_diagnostics.csv").exists()
     assert (tmp_path / "test_regime_metrics.csv").exists()
+    assert (tmp_path / "test_spike_score_diagnostics.csv").exists()
     assert (tmp_path / "test_scenario_diagnostics.csv").exists()
     assert (tmp_path / "test_metrics.csv").exists()
 

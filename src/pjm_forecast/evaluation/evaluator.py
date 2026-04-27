@@ -11,6 +11,7 @@ from .metrics import compute_metrics, compute_quantile_diagnostics
 from .regime_metrics import compute_regime_metrics
 from .reporting import plot_high_volatility_week, plot_hourly_mae
 from .scenarios import compute_scenario_diagnostics
+from .spike_score_diagnostics import compute_spike_score_diagnostics
 from pjm_forecast.prediction_contract import point_prediction_view, quantile_values
 from pjm_forecast.quantile_postprocess import postprocess_quantile_predictions
 
@@ -53,6 +54,8 @@ class _ArtifactStoreLike(Protocol):
     def write_quantile_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
     def write_regime_metrics(self, split: str, regime_metrics_df: pd.DataFrame) -> Path: ...
+
+    def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
     def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
@@ -233,6 +236,24 @@ class Evaluator:
         metrics_df = metrics_df.sort_values(["model", "seed", "run", "regime"]).reset_index(drop=True)
         self.artifacts.write_regime_metrics(bundle.split, metrics_df)
         return metrics_df
+
+    def compute_spike_score_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
+        calibration_cfg = self.schema.config.report.get("quantile_postprocess", {}).get("calibration", {})
+        score_column = str(calibration_cfg.get("regime_score_column", "spike_score"))
+        threshold = float(calibration_cfg.get("regime_threshold", 0.67))
+        rows = []
+        for run in bundle.runs:
+            rows.append(
+                {
+                    "run": run.name,
+                    "model": run.model,
+                    "seed": run.seed,
+                    **compute_spike_score_diagnostics(run.frame, score_column=score_column, threshold=threshold),
+                }
+            )
+        diagnostics_df = pd.DataFrame(rows).sort_values(["model", "seed", "run"]).reset_index(drop=True)
+        self.artifacts.write_spike_score_diagnostics(bundle.split, diagnostics_df)
+        return diagnostics_df
 
     def compute_scenario_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
         scenario_cfg = self.schema.config.report.get("scenario_evaluation", {})

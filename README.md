@@ -112,12 +112,16 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
   reuse a baseline model body but need calibration context such as
   `spike_score`; the canonical backtest writes required `hour_x_regime`
   context directly.
+- `scripts/experiments/evaluate_hour_x_regime_grid.py` compares `hour_cqr`
+  against candidate `hour_x_regime` thresholds on existing validation/test
+  prediction parquet files without retraining.
 - `docs/experiments/` records small human-readable summaries for experiment
   decisions. Generated prediction, metrics, plot, and scenario artifacts remain
   under `artifacts*` directories and should not be treated as source of truth.
-- Evaluation writes `{split}_regime_metrics.csv` alongside scalar metrics and
-  quantile diagnostics so P50 and upper-tail behavior can be reviewed by price
-  regime before promotion.
+- Evaluation writes `{split}_regime_metrics.csv` and
+  `{split}_spike_score_diagnostics.csv` alongside scalar metrics and quantile
+  diagnostics so P50, upper-tail behavior, and spike-context coverage can be
+  reviewed before promotion.
 
 ## Splits
 
