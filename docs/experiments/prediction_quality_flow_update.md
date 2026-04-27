@@ -36,7 +36,6 @@ The generated registry is a local artifact view and remains ignored by git.
 The following feedback items remain valuable but require a separate evidence
 loop:
 
-- rolling-safe `spike_score`,
 - `spike_score_diagnostics.csv`,
 - `hour_x_regime` CQR grid,
 - gated tail blend,
@@ -44,3 +43,10 @@ loop:
 
 They should build on the benchmark registry and quality gate rather than
 expanding NHITS `futr_exog`.
+
+## Follow-up Implementation
+
+The canonical `spike_score` feature now uses historical percentile scoring
+instead of full-sample rank normalization. Scores for an existing prefix are
+stable when future rows are appended, so the context is safe to use for
+postprocess grouping without peeking at the future sample distribution.

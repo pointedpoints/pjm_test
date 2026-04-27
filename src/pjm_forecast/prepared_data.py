@@ -514,7 +514,7 @@ class FeatureSchema:
             source = str(input_item["source"])
             weight = float(input_item.get("weight", 1.0))
             direction = str(input_item.get("direction", "positive"))
-            ranked = feature_df[source].astype(float).rank(pct=True, method="average").fillna(0.5)
+            ranked = self._historical_percentile_score(feature_df[source].astype(float))
             if direction == "negative":
                 ranked = 1.0 - ranked
             score = score + weight * ranked
@@ -522,6 +522,42 @@ class FeatureSchema:
         if total_weight <= 0.0:
             raise ValueError(f"spike_score {spec.get('name')!r} requires positive total weight.")
         return (score / total_weight).clip(lower=0.0, upper=1.0).astype(float)
+
+    @staticmethod
+    def _historical_percentile_score(values: pd.Series) -> pd.Series:
+        raw = values.to_numpy(dtype=float)
+        valid = raw[~np.isnan(raw)]
+        if valid.size == 0:
+            return pd.Series(0.5, index=values.index, dtype=float)
+
+        unique_values = np.unique(valid)
+        tree = np.zeros(len(unique_values) + 1, dtype=int)
+
+        def add(position: int) -> None:
+            cursor = position + 1
+            while cursor < len(tree):
+                tree[cursor] += 1
+                cursor += cursor & -cursor
+
+        def prefix_sum(position: int) -> int:
+            total = 0
+            cursor = position + 1
+            while cursor > 0:
+                total += int(tree[cursor])
+                cursor -= cursor & -cursor
+            return total
+
+        scores = np.full(len(raw), 0.5, dtype=float)
+        seen = 0
+        for idx, value in enumerate(raw):
+            if np.isnan(value):
+                continue
+            position = int(np.searchsorted(unique_values, value, side="right") - 1)
+            if seen > 0:
+                scores[idx] = prefix_sum(position) / seen
+            add(position)
+            seen += 1
+        return pd.Series(scores, index=values.index, dtype=float)
 
 
 @dataclass(frozen=True)

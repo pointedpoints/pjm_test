@@ -24,7 +24,7 @@ experiments comparable.
 | `prior_day_price_max` | previous complete-day state | boundary | medium | experiment candidate or `spike_score` | target-like price transform |
 | `prior_day_price_spread` | previous complete-day state | boundary | medium | experiment candidate or `spike_score` | zscore |
 | `prior_day_price_max_ramp` | previous complete-day state | boundary | medium | `spike_score` context | zscore |
-| `spike_score` | regime context | derived from allowed inputs | medium if globally ranked | postprocess context only unless rolling-safe | [0, 1] |
+| `spike_score` | regime context | derived from allowed inputs | low after historical scoring | postprocess context only | rolling historical percentile [0, 1] |
 | Horizon realized LMP | ground truth | no | high | forbidden | forbidden |
 | Horizon realized energy | ground truth | no | high | forbidden | forbidden |
 | Horizon realized congestion/loss | ground truth | no | high | forbidden | forbidden |

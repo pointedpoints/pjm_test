@@ -377,6 +377,32 @@ def test_feature_schema_builds_spike_score_feature(tmp_path: Path) -> None:
     assert prepared.feature_df["spike_score"].iloc[-1] > prepared.feature_df["spike_score"].iloc[0]
 
 
+def test_spike_score_is_stable_when_future_values_are_appended(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [
+                {
+                    "kind": "spike_score",
+                    "name": "spike_score",
+                    "inputs": [{"source": "zonal_load_forecast", "weight": 1.0}],
+                }
+            ],
+        ),
+    )
+    config = load_config(config_path)
+    prefix_panel = _build_panel("2024-01-01 00:00:00", hours=48)
+    full_panel = _build_panel("2024-01-01 00:00:00", hours=72)
+    full_panel.loc[48:, "zonal_load_forecast"] = 99_999.0
+
+    schema = FeatureSchema(config)
+    prefix_scores = schema.build_feature_frame(prefix_panel)["spike_score"]
+    full_scores = schema.build_feature_frame(full_panel)["spike_score"].iloc[:48]
+
+    pd.testing.assert_series_equal(prefix_scores.reset_index(drop=True), full_scores.reset_index(drop=True))
+
+
 def test_feature_schema_builds_pre_holiday_features() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     raw = yaml.safe_load(config.path.read_text(encoding="utf-8"))

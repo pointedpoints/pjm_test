@@ -89,8 +89,9 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - NeuralForecast models (`NBEATSx`/`NHITS`) use:
   - future exogenous signals plus calendar columns as `futr_exog`
   - price lags plus configured lagged signal columns as `hist_exog`
-- Canonical `spike_score` is derived into the feature store for calibration
-  context. It is not included in the promoted NHITS model's `futr_exog`.
+- Canonical `spike_score` is derived into the feature store with rolling-safe
+  historical percentile scoring for calibration context. It is not included in
+  the promoted NHITS model's `futr_exog`.
 - Postprocessing supports validation-fitted q50 bias correction before CQR.
   It remains disabled in the canonical config until it beats CQR-only metrics
   on validation/test.
