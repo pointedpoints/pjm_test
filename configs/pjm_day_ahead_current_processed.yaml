@@ -57,6 +57,23 @@ features:
       left: "zonal_load_forecast"
       right: "cooling_degree_22"
       name: "load_cooling_pressure"
+    - kind: "prior_day_price_stat"
+      source: "y"
+      stat: "max_ramp"
+      name: "prior_day_price_max_ramp"
+    - kind: "spike_score"
+      name: "spike_score"
+      inputs:
+        - source: "zonal_load_forecast"
+          weight: 0.25
+        - source: "cooling_degree_22"
+          weight: 0.20
+        - source: "load_cooling_pressure"
+          weight: 0.25
+        - source: "heating_degree_18"
+          weight: 0.15
+        - source: "prior_day_price_max_ramp"
+          weight: 0.15
   cyclical:
     hour: 24
     day_of_week: 7
@@ -116,10 +133,10 @@ backtest:
   retrain_weekday: 0
   retrain_weekday_name: "MON"
   seasonal_naive_lag_hours: 168
-  benchmark_models: ["nbeatsx"]
+  benchmark_models: ["nhits_tail_grid_weighted_main"]
 
 tuning:
-  model_name: "nbeatsx"
+  model_name: "nhits_tail_grid_weighted_main"
   n_trials: 5
   metric: "pinball"
   use_ensemble_in_tuning: false
@@ -135,11 +152,11 @@ tuning:
       - [768, 768]
 
 models:
-  nbeatsx:
-    type: "nbeatsx"
+  nhits_tail_grid_weighted_main:
+    type: "nhits"
     h: 24
     input_size: 336
-    max_steps: 600
+    max_steps: 300
     learning_rate: 0.0005
     batch_size: 16
     dropout_prob_theta: 0.05
@@ -148,7 +165,10 @@ models:
     exog_scaler: "zscore"
     loss_name: "huber_mqloss"
     loss_delta: 0.75
-    quantiles: [0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.99]
+    quantiles: [0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.975, 0.99, 0.995]
+    quantile_weights: [1.50, 1.30, 1.15, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.10, 1.30, 1.70, 2.10, 2.70, 3.20]
+    quantile_deltas: [1.50, 1.25, 1.00, 0.85, 0.75, 0.75, 0.75, 0.75, 0.75, 0.85, 1.00, 1.25, 1.40, 1.60, 1.80]
+    monotonicity_penalty: 0.03
     early_stop_patience_steps: 10
     val_check_steps: 50
     validation_size: 168
@@ -156,8 +176,10 @@ models:
     ensemble_aggregation: "mean"
     ensemble_members:
       - seed_offset: 0
-      - seed_offset: 11
-    stack_types: ["trend", "seasonality", "identity"]
+    stack_types: ["identity", "identity", "identity"]
+    n_blocks: [1, 1, 1]
+    n_pool_kernel_size: [2, 2, 1]
+    n_freq_downsample: [4, 2, 1]
     mlp_units:
       - [768, 768]
       - [768, 768]
@@ -169,11 +191,21 @@ report:
   include_high_volatility_week: true
   quantile_postprocess:
     monotonic: true
+    median_bias:
+      enabled: false
+      source_split: "validation"
+      group_by: "hour_x_regime"
+      regime_score_column: "spike_score"
+      regime_threshold: 0.50
+      min_group_size: 24
+      max_abs_adjustment: 20.0
     calibration:
       enabled: true
       source_split: "validation"
       method: "cqr_asymmetric"
-      group_by: "hour"
+      group_by: "hour_x_regime"
+      regime_score_column: "spike_score"
+      regime_threshold: 0.50
       min_group_size: 24
       interval_coverage_floors:
         "0.10-0.90": 0.76
@@ -183,6 +215,7 @@ report:
     enabled: true
     source_split: "validation"
     copula_family: "student_t"
+    tail_policy: "linear"
     dof_grid: [3.0, 5.0, 7.0, 10.0]
     n_samples: 256
     random_seed: 7

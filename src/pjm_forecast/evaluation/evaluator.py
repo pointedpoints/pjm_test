@@ -103,9 +103,18 @@ class Evaluator:
         calibration_min_group_size = int(calibration_cfg.get("min_group_size", 1))
         calibration_regime_score_column = str(calibration_cfg.get("regime_score_column", "spike_score"))
         calibration_regime_threshold = float(calibration_cfg.get("regime_threshold", 0.67))
+        median_bias_cfg = postprocess_cfg.get("median_bias", {})
+        median_bias_enabled = bool(median_bias_cfg.get("enabled", False))
+        median_bias_group_by = median_bias_cfg.get("group_by", calibration_group_by)
+        median_bias_min_group_size = int(median_bias_cfg.get("min_group_size", calibration_min_group_size))
+        median_bias_regime_score_column = str(median_bias_cfg.get("regime_score_column", calibration_regime_score_column))
+        median_bias_regime_threshold = float(median_bias_cfg.get("regime_threshold", calibration_regime_threshold))
+        median_bias_max_abs_adjustment = median_bias_cfg.get("max_abs_adjustment")
+        if median_bias_max_abs_adjustment is not None:
+            median_bias_max_abs_adjustment = float(median_bias_max_abs_adjustment)
         calibration_frame: pd.DataFrame | None = None
-        if run.split == "test" and bool(calibration_cfg.get("enabled", False)):
-            source_split = str(calibration_cfg.get("source_split", "validation"))
+        if run.split == "test" and (bool(calibration_cfg.get("enabled", False)) or median_bias_enabled):
+            source_split = str(median_bias_cfg.get("source_split", calibration_cfg.get("source_split", "validation")))
             calibration_frame = self._load_matching_run_frame(
                 split=source_split,
                 model=run.model,
@@ -127,6 +136,12 @@ class Evaluator:
             calibration_min_group_size=calibration_min_group_size,
             calibration_regime_score_column=calibration_regime_score_column,
             calibration_regime_threshold=calibration_regime_threshold,
+            median_bias_enabled=median_bias_enabled,
+            median_bias_group_by=median_bias_group_by,
+            median_bias_min_group_size=median_bias_min_group_size,
+            median_bias_regime_score_column=median_bias_regime_score_column,
+            median_bias_regime_threshold=median_bias_regime_threshold,
+            median_bias_max_abs_adjustment=median_bias_max_abs_adjustment,
         )
 
     def _load_matching_run_frame(

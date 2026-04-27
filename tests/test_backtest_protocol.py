@@ -303,6 +303,36 @@ def test_backtest_rejects_misaligned_model_prediction_output() -> None:
         )
 
 
+def test_backtest_rejects_hour_regime_calibration_without_spike_context() -> None:
+    config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
+    config.raw["backtest"]["rolling_window_days"] = 8
+    config.raw.setdefault("report", {})["quantile_postprocess"] = {
+        "monotonic": True,
+        "calibration": {
+            "enabled": True,
+            "source_split": "validation",
+            "method": "cqr_asymmetric",
+            "group_by": "hour_x_regime",
+            "regime_score_column": "spike_score",
+            "regime_threshold": 0.5,
+            "min_group_size": 24,
+        },
+    }
+    feature_df = _feature_frame()
+    forecast_days = [pd.Timestamp("2017-01-09 00:00:00")]
+
+    with pytest.raises(ValueError, match="requires future feature column 'spike_score'"):
+        run_rolling_backtest(
+            config=config,
+            feature_df=feature_df,
+            split_name="validation",
+            forecast_days=forecast_days,
+            model_builder=lambda: SeasonalNaiveModel(seasonal_lag_hours=24),
+            model_name="seasonal_naive",
+            seed=7,
+        )
+
+
 def test_backtest_rejects_resumed_chunk_with_missing_expected_quantile(tmp_path: Path) -> None:
     config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
     config.raw["backtest"]["rolling_window_days"] = 8

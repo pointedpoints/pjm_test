@@ -7,7 +7,7 @@ from .workspace import Workspace
 
 STAGE_ORDER = [
     "prepare_data",
-    "tune_nbeatsx",
+    "tune_model",
     "backtest_all_models",
     "evaluate_and_plot",
     "export_report_assets",
@@ -21,7 +21,7 @@ def _run_prepare(workspace: Workspace, split: str) -> None:
 
 def _run_tune(workspace: Workspace, split: str) -> None:
     del split
-    workspace.tune_nbeatsx()
+    workspace.tune_model()
 
 
 def _run_backtest(workspace: Workspace, split: str) -> None:
@@ -38,7 +38,7 @@ def _run_export(workspace: Workspace, split: str) -> None:
 
 STAGE_FUNCTIONS: dict[str, Callable[[Workspace, str], None]] = {
     "prepare_data": _run_prepare,
-    "tune_nbeatsx": _run_tune,
+    "tune_model": _run_tune,
     "backtest_all_models": _run_backtest,
     "evaluate_and_plot": _run_evaluate,
     "export_report_assets": _run_export,

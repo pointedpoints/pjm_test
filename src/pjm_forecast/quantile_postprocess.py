@@ -36,6 +36,14 @@ class ConformalQuantileCalibration:
     regime_threshold: float = DEFAULT_REGIME_THRESHOLD
 
 
+@dataclass(frozen=True)
+class MedianBiasCalibration:
+    group_by: str | None
+    adjustments: dict[object, float]
+    regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN
+    regime_threshold: float = DEFAULT_REGIME_THRESHOLD
+
+
 def symmetric_quantile_pairs(quantiles: list[float]) -> list[tuple[float, float]]:
     normalized = sorted(float(value) for value in quantiles)
     pairs: list[tuple[float, float]] = []
@@ -150,6 +158,92 @@ def fit_conformal_quantile_calibration(
     )
 
 
+def fit_median_bias_calibration(
+    predictions: pd.DataFrame,
+    *,
+    group_by: str | None = None,
+    min_group_size: int = 1,
+    regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
+    regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
+    max_abs_adjustment: float | None = None,
+) -> MedianBiasCalibration:
+    group_by = _normalize_group_by(group_by)
+    min_group_size = int(min_group_size)
+    regime_threshold = _normalize_regime_threshold(regime_threshold)
+    if min_group_size <= 0:
+        raise ValueError("min_group_size must be >= 1.")
+    if max_abs_adjustment is not None and float(max_abs_adjustment) <= 0.0:
+        raise ValueError("max_abs_adjustment must be > 0 when configured.")
+
+    if not is_quantile_prediction_frame(predictions):
+        return MedianBiasCalibration(
+            group_by=group_by,
+            adjustments={},
+            regime_score_column=regime_score_column,
+            regime_threshold=regime_threshold,
+        )
+
+    corrected_source = enforce_monotonic_quantiles(predictions)
+    quantiles = quantile_values(corrected_source)
+    median_quantile = _resolve_quantile(quantiles, 0.5)
+    if median_quantile is None:
+        return MedianBiasCalibration(
+            group_by=group_by,
+            adjustments={},
+            regime_score_column=regime_score_column,
+            regime_threshold=regime_threshold,
+        )
+
+    prediction_grid = corrected_source.pivot(index="ds", columns="quantile", values="y_pred").sort_index(axis=1)
+    y_true = corrected_source.groupby("ds", sort=True)["y"].first().reindex(prediction_grid.index)
+    residual = y_true.astype(float) - prediction_grid[median_quantile].astype(float)
+    groups = _group_labels(
+        corrected_source,
+        prediction_grid.index,
+        group_by,
+        regime_score_column=regime_score_column,
+        regime_threshold=regime_threshold,
+    )
+
+    adjustments: dict[object, float] = {ALL_GROUP: _bounded_adjustment(float(residual.median()), max_abs_adjustment)}
+    if group_by is not None:
+        for group_label in pd.Index(groups).unique():
+            mask = _group_mask(groups, group_label)
+            if int(mask.sum()) < min_group_size:
+                continue
+            adjustments[group_label] = _bounded_adjustment(float(residual.loc[mask].median()), max_abs_adjustment)
+    return MedianBiasCalibration(
+        group_by=group_by,
+        adjustments=adjustments,
+        regime_score_column=regime_score_column,
+        regime_threshold=regime_threshold,
+    )
+
+
+def apply_median_bias_calibration(
+    predictions: pd.DataFrame,
+    calibration: MedianBiasCalibration,
+) -> pd.DataFrame:
+    if not is_quantile_prediction_frame(predictions) or not calibration.adjustments:
+        return predictions.copy()
+
+    corrected = predictions.copy()
+    prediction_grid = corrected.pivot(index="ds", columns="quantile", values="y_pred").sort_index(axis=1)
+    group_labels = _group_labels(
+        corrected,
+        prediction_grid.index,
+        calibration.group_by,
+        regime_score_column=calibration.regime_score_column,
+        regime_threshold=calibration.regime_threshold,
+    )
+    labels_by_ds = pd.Series(group_labels, index=prediction_grid.index)
+    shifts = pd.to_datetime(corrected["ds"]).map(
+        lambda ds: calibration.adjustments.get(labels_by_ds.loc[ds], calibration.adjustments[ALL_GROUP])
+    )
+    corrected["y_pred"] = corrected["y_pred"].astype(float) + shifts.astype(float).to_numpy()
+    return enforce_monotonic_quantiles(corrected)
+
+
 def apply_conformal_quantile_calibration(
     predictions: pd.DataFrame,
     calibration: ConformalQuantileCalibration,
@@ -200,6 +294,12 @@ def postprocess_quantile_predictions(
     calibration_min_group_size: int = 1,
     calibration_regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
     calibration_regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
+    median_bias_enabled: bool = False,
+    median_bias_group_by: str | None = None,
+    median_bias_min_group_size: int = 1,
+    median_bias_regime_score_column: str = DEFAULT_REGIME_SCORE_COLUMN,
+    median_bias_regime_threshold: float = DEFAULT_REGIME_THRESHOLD,
+    median_bias_max_abs_adjustment: float | None = None,
 ) -> pd.DataFrame:
     if not is_quantile_prediction_frame(predictions):
         return predictions.copy()
@@ -207,9 +307,21 @@ def postprocess_quantile_predictions(
     corrected = predictions.copy()
     if monotonic:
         corrected = enforce_monotonic_quantiles(corrected)
-    if calibration_frame is not None and is_quantile_prediction_frame(calibration_frame):
+    calibration_source = calibration_frame
+    if median_bias_enabled and calibration_source is not None and is_quantile_prediction_frame(calibration_source):
+        median_bias = fit_median_bias_calibration(
+            calibration_source,
+            group_by=median_bias_group_by,
+            min_group_size=median_bias_min_group_size,
+            regime_score_column=median_bias_regime_score_column,
+            regime_threshold=median_bias_regime_threshold,
+            max_abs_adjustment=median_bias_max_abs_adjustment,
+        )
+        corrected = apply_median_bias_calibration(corrected, median_bias)
+        calibration_source = apply_median_bias_calibration(calibration_source, median_bias)
+    if calibration_source is not None and is_quantile_prediction_frame(calibration_source):
         calibration = fit_conformal_quantile_calibration(
-            calibration_frame,
+            calibration_source,
             calibration_method=calibration_method,
             group_by=calibration_group_by,
             interval_coverage_floors=calibration_interval_coverage_floors,
@@ -285,6 +397,13 @@ def _conformal_quantile(scores: np.ndarray, target_level: float) -> float:
     values = np.asarray(scores, dtype=float)
     level = min(1.0, np.ceil((len(values) + 1) * float(target_level)) / len(values))
     return float(np.quantile(values, level, method="higher"))
+
+
+def _bounded_adjustment(value: float, max_abs_adjustment: float | None) -> float:
+    if max_abs_adjustment is None:
+        return float(value)
+    bound = float(max_abs_adjustment)
+    return float(np.clip(value, -bound, bound))
 
 
 def _pair_target_coverage(

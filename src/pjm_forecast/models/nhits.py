@@ -173,6 +173,7 @@ class NHITSModel(ForecastModel):
             "random_seed": self.random_seed,
             "logger": False,
             "enable_progress_bar": False,
+            "enable_model_summary": False,
         }
 
     def _build_loss(self) -> Any:

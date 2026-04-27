@@ -24,8 +24,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.3.4"]
 ml = [
+  "lightgbm>=4.6.0",
   "neuralforecast>=1.7.5",
   "torch>=2.6.0",
+  "xgboost>=3.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

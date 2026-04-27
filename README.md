@@ -16,12 +16,11 @@ This config uses:
 - `official_weather_ready` as the dataset source
 - `2021-01-01` to `2026-03-31` hourly data
 - Open-Meteo historical forecast weather features
-- `NBEATSx` as the active benchmark model
+- `NHITS` dense upper-tail quantile training as the active benchmark model
 
-Current probabilistic experiments are tracked separately from the canonical
-config. As of the latest experiment notes, `NHITS 600` is the strongest
-probabilistic structure candidate, with `NBEATSx 600` retained as the main
-baseline for comparison.
+The promoted mainline model is `nhits_tail_grid_weighted_main`. It uses a dense
+upper-tail quantile grid through `q0.995`, weighted Huber multi-quantile loss,
+and `hour_x_regime` CQR calibration using `spike_score` as postprocess context.
 
 ## Environment
 
@@ -53,10 +52,10 @@ Prepare processed data:
 uv run python scripts\prepare_data.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
-Tune `NBEATSx`:
+Tune the model named by `tuning.model_name`:
 
 ```powershell
-uv run python scripts\tune_nbeatsx.py --config configs\pjm_day_ahead_current_processed.yaml
+uv run python scripts\tune_model.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
 Run backtest:
@@ -84,9 +83,14 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - Calendar features are derived from the `ds` local hourly sequence. Do not mix
   UTC-remapped timestamps into feature, split, lag, or forecast-window logic.
 - Canonical panel columns include `unique_id`, `ds`, `y`, and configured future exogenous signals.
-- `NBEATSx` uses:
+- NeuralForecast models (`NBEATSx`/`NHITS`) use:
   - future exogenous signals plus calendar columns as `futr_exog`
   - price lags plus configured lagged signal columns as `hist_exog`
+- Canonical `spike_score` is derived into the feature store for calibration
+  context. It is not included in the promoted NHITS model's `futr_exog`.
+- Postprocessing supports validation-fitted q50 bias correction before CQR.
+  It remains disabled in the canonical config until it beats CQR-only metrics
+  on validation/test.
 
 ## Experiment Layout
 
@@ -95,11 +99,15 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - `configs/experiments/` contains reproducible experiment branches. Keep these
   config-driven and avoid changing canonical behavior unless an experiment has
   been promoted.
+- `docs/experiments/2026-04-26-execution-plan.md` is the locked execution plan
+  for the next prediction-quality phases. Follow its experiment order and
+  promotion gates before expanding scope.
 - `scripts/inject_prediction_context.py` can copy existing prediction parquet
   files into a new prediction directory while joining context columns from the
   configured feature store by `ds`. Use it for postprocess-only branches that
   reuse a baseline model body but need calibration context such as
-  `spike_score`.
+  `spike_score`; the canonical backtest writes required `hour_x_regime`
+  context directly.
 - `docs/experiments/` records small human-readable summaries for experiment
   decisions. Generated prediction, metrics, plot, and scenario artifacts remain
   under `artifacts*` directories and should not be treated as source of truth.

@@ -117,7 +117,7 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
 def test_pipeline_stage_order_excludes_retrieval() -> None:
     assert STAGE_ORDER == [
         "prepare_data",
-        "tune_nbeatsx",
+        "tune_model",
         "backtest_all_models",
         "evaluate_and_plot",
         "export_report_assets",
@@ -131,6 +131,48 @@ def test_resolve_mlp_unit_search_options_prefers_configured_values() -> None:
         }
     }
     assert resolve_mlp_unit_search_options(tuning_cfg) == ["256x256", "384x384"]
+
+
+def test_workspace_build_model_applies_named_nhits_best_params(tmp_path: Path, monkeypatch) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["models"]["nhits_candidate"] = {
+        "type": "nhits",
+        "h": 24,
+        "input_size": 168,
+        "max_steps": 10,
+        "learning_rate": 0.001,
+        "batch_size": 16,
+        "dropout_prob_theta": 0.0,
+        "scaler_type": "identity",
+        "stack_types": ["identity", "identity", "identity"],
+        "mlp_units": [[256, 256], [256, 256], [256, 256]],
+        "loss_name": "huber_mqloss",
+        "loss_delta": 0.75,
+        "quantiles": [0.1, 0.5, 0.9],
+    }
+    workspace.artifacts.best_params("nhits_candidate").parent.mkdir(parents=True, exist_ok=True)
+    workspace.artifacts.best_params("nhits_candidate").write_text(
+        json.dumps({"input_size": 336, "mlp_units": "768x768"}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_raw_build_model(model_name: str, *, seed=None, disable_ensemble: bool = False):
+        del seed, disable_ensemble
+        captured["model_name"] = model_name
+        captured["model_cfg"] = dict(workspace.config.models[model_name])
+        return SnapshotStubModel()
+
+    monkeypatch.setattr(workspace, "_raw_build_model", _fake_raw_build_model)
+
+    workspace.build_model("nhits_candidate")
+
+    assert captured["model_name"] == "nhits_candidate"
+    assert captured["model_cfg"]["input_size"] == 336
+    assert captured["model_cfg"]["mlp_units"] == [[768, 768], [768, 768], [768, 768]]
 
 
 def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Path) -> None:
@@ -274,7 +316,7 @@ def test_workspace_export_nbeatsx_snapshot_fits_and_saves_model(tmp_path: Path, 
     assert stub_model.fit_rows == workspace.config.backtest["rolling_window_days"] * 24
 
 
-def test_workspace_predict_nbeatsx_snapshot_writes_prediction_file(tmp_path: Path, monkeypatch) -> None:
+def test_workspace_predict_model_snapshot_writes_prediction_file(tmp_path: Path, monkeypatch) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path)
     workspace = Workspace.open(config_path)
@@ -295,7 +337,7 @@ def test_workspace_predict_nbeatsx_snapshot_writes_prediction_file(tmp_path: Pat
     stub_model = SnapshotStubModel()
     monkeypatch.setattr(type(workspace.models), "load_snapshot", lambda self, snapshot_name_or_path: stub_model)
 
-    written_path = workspace.predict_nbeatsx_snapshot(
+    written_path = workspace.predict_model_snapshot(
         snapshot_name_or_path=tmp_path / "snapshot",
         history_path=history_path,
         future_path=future_path,

@@ -26,7 +26,3 @@ def predict_model_snapshot(snapshot_path: str, history_path: str, future_path: s
         future_df=future_df,
         output_path=Path(output_path),
     )
-
-
-def predict_nbeatsx_snapshot(snapshot_path: str, history_path: str, future_path: str, output_path: str) -> None:
-    predict_model_snapshot(snapshot_path, history_path, future_path, output_path)

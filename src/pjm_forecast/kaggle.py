@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -8,10 +7,6 @@ import yaml
 
 
 KAGGLE_WORKING_ROOT = Path("/kaggle/working")
-
-
-def is_kaggle_environment() -> bool:
-    return Path("/kaggle").exists() or os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 
 
 def build_kaggle_config(
@@ -50,16 +45,3 @@ def build_kaggle_config(
     with output_config_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
     return output_config_path
-
-
-def kaggle_artifact_paths(output_root: str | Path | None = None) -> dict[str, Path]:
-    output_root = Path(output_root) if output_root is not None else KAGGLE_WORKING_ROOT / "pjm_remaster_run"
-    artifact_root = output_root / "artifacts"
-    return {
-        "root": output_root,
-        "artifact_root": artifact_root,
-        "prediction_dir": artifact_root / "predictions",
-        "metrics_dir": artifact_root / "metrics",
-        "plots_dir": artifact_root / "plots",
-        "report_dir": artifact_root / "report",
-    }

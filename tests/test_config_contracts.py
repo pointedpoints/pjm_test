@@ -20,7 +20,6 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
     for path in [
         Path("configs/pjm_day_ahead_v1.yaml"),
         Path("configs/pjm_day_ahead_kaggle.yaml"),
-        Path("configs/pjm_day_ahead_current_processed.yaml"),
     ]:
         config = load_config(path)
         runtime_cfg = config.nbeatsx_runtime_config()
@@ -35,30 +34,63 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
         assert config.retrieval_base_model_name == "nbeatsx"
         assert config.retrieval_output_model_name == "nbeatsx_rag"
 
+    for path, model_name in [
+        (Path("configs/pjm_day_ahead_current_processed.yaml"), "nhits_tail_grid_weighted_main"),
+    ]:
+        config = load_config(path)
+        runtime_cfg = config.runtime_model_config(model_name)
+        assert config.target_column == "y"
+        assert config.prediction_horizon == 24
+        assert config.prediction_freq == "h"
+        assert config.resolved_neuralforecast_scaler_strategy(model_name) == "robust"
+        assert runtime_cfg["h"] == config.prediction_horizon
+        assert runtime_cfg["freq"] == config.prediction_freq
+        assert runtime_cfg["target_transform"] == "asinh_q95"
+        assert runtime_cfg["exog_scaler"] == "zscore"
+        assert config.retrieval_base_model_name == "nbeatsx"
+        assert config.retrieval_output_model_name == "nbeatsx_rag"
 
-def test_current_processed_config_uses_quantile_nbeatsx_contract() -> None:
+
+def test_current_processed_config_uses_nhits_tail_grid_contract() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
-    runtime_cfg = config.nbeatsx_runtime_config()
+    runtime_cfg = config.runtime_model_config("nhits_tail_grid_weighted_main")
 
+    assert config.backtest["benchmark_models"] == ["nhits_tail_grid_weighted_main"]
+    assert config.tuning["model_name"] == "nhits_tail_grid_weighted_main"
+    assert runtime_cfg["type"] == "nhits"
     assert runtime_cfg["loss_name"] == "huber_mqloss"
     assert runtime_cfg["loss_delta"] == 0.75
     assert runtime_cfg["quantiles"][0] == 0.01
-    assert runtime_cfg["quantiles"][-1] == 0.99
+    assert runtime_cfg["quantiles"][-3:] == [0.975, 0.99, 0.995]
     assert 0.5 in runtime_cfg["quantiles"]
-    assert runtime_cfg["ensemble_members"] == [{"seed_offset": 0}, {"seed_offset": 11}]
+    assert len(runtime_cfg["quantile_weights"]) == len(runtime_cfg["quantiles"])
+    assert len(runtime_cfg["quantile_deltas"]) == len(runtime_cfg["quantiles"])
+    assert runtime_cfg["monotonicity_penalty"] == 0.03
+    assert runtime_cfg["ensemble_members"] == [{"seed_offset": 0}]
     assert config.tuning["metric"] == "pinball"
     assert config.features["price_lags"] == [24]
+    assert "spike_score" not in config.features["future_exog"]
+    assert any(item.get("name") == "spike_score" for item in config.features["derived_features"])
     postprocess_cfg = config.report["quantile_postprocess"]
     assert postprocess_cfg["monotonic"] is True
+    assert postprocess_cfg["median_bias"]["enabled"] is False
+    assert postprocess_cfg["median_bias"]["source_split"] == "validation"
+    assert postprocess_cfg["median_bias"]["group_by"] == "hour_x_regime"
+    assert postprocess_cfg["median_bias"]["regime_score_column"] == "spike_score"
+    assert postprocess_cfg["median_bias"]["regime_threshold"] == 0.50
+    assert postprocess_cfg["median_bias"]["max_abs_adjustment"] == 20.0
     assert postprocess_cfg["calibration"]["enabled"] is True
     assert postprocess_cfg["calibration"]["source_split"] == "validation"
     assert postprocess_cfg["calibration"]["method"] == "cqr_asymmetric"
-    assert postprocess_cfg["calibration"]["group_by"] == "hour"
+    assert postprocess_cfg["calibration"]["group_by"] == "hour_x_regime"
+    assert postprocess_cfg["calibration"]["regime_score_column"] == "spike_score"
+    assert postprocess_cfg["calibration"]["regime_threshold"] == 0.50
     assert postprocess_cfg["calibration"]["min_group_size"] == 24
     assert postprocess_cfg["calibration"]["interval_coverage_floors"]["0.01-0.99"] == 0.95
     scenario_cfg = config.report["scenario_evaluation"]
     assert scenario_cfg["enabled"] is True
     assert scenario_cfg["copula_family"] == "student_t"
+    assert scenario_cfg["tail_policy"] == "linear"
     assert scenario_cfg["n_samples"] == 256
 
 
@@ -78,6 +110,116 @@ def test_tail_grid_phase1_config_uses_raw_nhits_upper_tail_contract() -> None:
     assert len(tail_cfg["quantile_deltas"]) == len(tail_cfg["quantiles"])
     assert tail_cfg["quantile_weights"][-1] > tail_cfg["quantile_weights"][-2] > tail_cfg["quantile_weights"][-3]
     assert tail_cfg["monotonicity_penalty"] == 0.03
+
+
+def test_q50_weight_grid_config_only_changes_median_quantile_weight() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_validation_nhits_q50_weight_grid.yaml"))
+    base_cfg = config.runtime_model_config("nhits_q50w100")
+    q50w125_cfg = config.runtime_model_config("nhits_q50w125")
+    q50w150_cfg = config.runtime_model_config("nhits_q50w150")
+    median_index = base_cfg["quantiles"].index(0.5)
+
+    assert config.backtest["benchmark_models"] == ["nhits_q50w100", "nhits_q50w125", "nhits_q50w150"]
+    assert config.report["quantile_postprocess"]["monotonic"] is True
+    assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert config.report["scenario_evaluation"]["enabled"] is False
+    assert base_cfg["quantile_weights"][median_index] == 1.0
+    assert q50w125_cfg["quantile_weights"][median_index] == 1.25
+    assert q50w150_cfg["quantile_weights"][median_index] == 1.5
+
+    for left, right in [(base_cfg, q50w125_cfg), (base_cfg, q50w150_cfg)]:
+        assert left["quantiles"] == right["quantiles"]
+        assert left["quantile_deltas"] == right["quantile_deltas"]
+        assert left["monotonicity_penalty"] == right["monotonicity_penalty"]
+        left_weights = list(left["quantile_weights"])
+        right_weights = list(right["quantile_weights"])
+        left_weights.pop(median_index)
+        right_weights.pop(median_index)
+        assert left_weights == right_weights
+
+
+def test_q50w150_test_candidate_uses_canonical_cqr_contract() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_test_nhits_q50w150.yaml"))
+    runtime_cfg = config.runtime_model_config("nhits_q50w150")
+    median_index = runtime_cfg["quantiles"].index(0.5)
+    postprocess_cfg = config.report["quantile_postprocess"]
+
+    assert config.backtest["benchmark_models"] == ["nhits_q50w150"]
+    assert runtime_cfg["type"] == "nhits"
+    assert runtime_cfg["quantile_weights"][median_index] == 1.5
+    assert postprocess_cfg["monotonic"] is True
+    assert postprocess_cfg["median_bias"]["enabled"] is False
+    assert postprocess_cfg["calibration"]["enabled"] is True
+    assert postprocess_cfg["calibration"]["method"] == "cqr_asymmetric"
+    assert postprocess_cfg["calibration"]["group_by"] == "hour_x_regime"
+    assert postprocess_cfg["calibration"]["regime_score_column"] == "spike_score"
+    assert postprocess_cfg["calibration"]["regime_threshold"] == 0.50
+    assert config.report["scenario_evaluation"]["enabled"] is True
+    assert config.report["scenario_evaluation"]["tail_policy"] == "linear"
+
+
+def test_phase1_benchmark_floor_config_restores_p50_feature_contract() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_validation_phase1_benchmark_floor.yaml"))
+
+    assert config.backtest["benchmark_models"] == ["seasonal_naive", "lear", "lightgbm_q", "xgboost_q"]
+    assert config.features["price_lags"] == [24, 168]
+    assert config.features["source_lags"] == [24, 168]
+    assert "system_load_forecast" in config.features["future_exog"]
+    assert any(item.get("name") == "prior_day_price_max" for item in config.features["derived_features"])
+    assert any(item.get("name") == "prior_day_price_max_ramp" for item in config.features["derived_features"])
+    assert config.models["lightgbm_q"]["quantiles"] == [0.10, 0.50, 0.90]
+    assert config.models["xgboost_q"]["quantiles"] == [0.10, 0.50, 0.90]
+    assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert config.report["scenario_evaluation"]["enabled"] is False
+
+
+def test_phase1_p50_friendly_neural_config_uses_restored_features_and_moderate_quantile_grid() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_validation_phase1_p50_friendly_neural.yaml"))
+    nhits_cfg = config.runtime_model_config("nhits_p50_friendly")
+    nbeatsx_cfg = config.runtime_model_config("nbeatsx_p50_friendly")
+
+    assert config.backtest["benchmark_models"] == ["nhits_p50_friendly", "nbeatsx_p50_friendly"]
+    assert "system_load_forecast" in config.features["future_exog"]
+    assert "prior_day_price_max" in config.features["future_exog"]
+    assert "prior_day_price_max_ramp" in config.features["future_exog"]
+    assert config.features["price_lags"] == [24, 168]
+    assert config.features["source_lags"] == [24, 168]
+    assert nhits_cfg["quantiles"] == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]
+    assert nhits_cfg["quantile_weights"][4] == 1.10
+    assert nhits_cfg["monotonicity_penalty"] == 0.01
+    assert nbeatsx_cfg["quantile_weights"] == nhits_cfg["quantile_weights"]
+    assert nbeatsx_cfg["quantile_deltas"] == nhits_cfg["quantile_deltas"]
+    assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert config.report["scenario_evaluation"]["enabled"] is False
+
+
+def test_phase1_nbeatsx_test_raw_config_carries_spike_score_context_without_enabling_calibration() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_test_phase1_nbeatsx_p50_raw.yaml"))
+
+    assert config.backtest["benchmark_models"] == ["nbeatsx_p50_friendly"]
+    assert "spike_score" in config.features["future_exog"]
+
+    calibration = config.report["quantile_postprocess"]["calibration"]
+    assert calibration["enabled"] is False
+    assert calibration["group_by"] == "hour_x_regime"
+    assert calibration["regime_score_column"] == "spike_score"
+
+
+def test_phase1_nbeatsx_calibration_compare_configs_split_hour_and_hour_x_regime() -> None:
+    hour = load_config(Path("configs/experiments/pjm_current_test_phase1_nbeatsx_p50_hour.yaml"))
+    hour_x_regime = load_config(Path("configs/experiments/pjm_current_test_phase1_nbeatsx_p50_hour_x_regime.yaml"))
+
+    hour_calibration = hour.report["quantile_postprocess"]["calibration"]
+    regime_calibration = hour_x_regime.report["quantile_postprocess"]["calibration"]
+
+    assert hour_calibration["enabled"] is True
+    assert hour_calibration["group_by"] == "hour"
+    assert "regime_score_column" not in hour_calibration
+
+    assert regime_calibration["enabled"] is True
+    assert regime_calibration["group_by"] == "hour_x_regime"
+    assert regime_calibration["regime_score_column"] == "spike_score"
+    assert hour.project["directories"]["prediction_dir"] == hour_x_regime.project["directories"]["prediction_dir"]
 
 
 def test_load_config_rejects_nbeatsx_horizon_drift(tmp_path: Path) -> None:
@@ -429,6 +571,52 @@ def test_load_config_allows_hour_x_regime_calibration(tmp_path: Path) -> None:
     calibration = load_config(config_path).report["quantile_postprocess"]["calibration"]
     assert calibration["group_by"] == "hour_x_regime"
     assert calibration["regime_score_column"] == "spike_score"
+
+
+def test_load_config_allows_median_bias_calibration(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "median_bias": {
+                        "enabled": True,
+                        "source_split": "validation",
+                        "group_by": "hour",
+                        "min_group_size": 24,
+                        "max_abs_adjustment": 10.0,
+                    },
+                },
+            ),
+        ),
+    )
+    median_bias = load_config(config_path).report["quantile_postprocess"]["median_bias"]
+    assert median_bias["enabled"] is True
+    assert median_bias["group_by"] == "hour"
+
+
+def test_load_config_rejects_invalid_median_bias_contract(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload.setdefault("report", {}),
+            payload["report"].__setitem__(
+                "quantile_postprocess",
+                {
+                    "monotonic": True,
+                    "median_bias": {
+                        "enabled": True,
+                        "source_split": "test",
+                    },
+                },
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="median_bias.source_split"):
+        load_config(config_path)
 
 
 def test_load_config_rejects_invalid_quantile_coverage_floor_key(tmp_path: Path) -> None:

@@ -274,9 +274,6 @@ class ProjectConfig:
     def nbeatsx_runtime_config(self) -> dict[str, Any]:
         return self.runtime_model_config("nbeatsx")
 
-    def nhits_runtime_config(self) -> dict[str, Any]:
-        return self.runtime_model_config("nhits")
-
     def validate_runtime_contracts(self) -> None:
         if self.target_column != "y":
             raise ValueError(f"features.target_col={self.target_column!r} is unsupported; v1 requires the canonical target column 'y'.")
@@ -435,14 +432,35 @@ class ProjectConfig:
         if monotonic is not None and not isinstance(monotonic, bool):
             raise ValueError("report.quantile_postprocess.monotonic must be a boolean when configured.")
         calibration = postprocess.get("calibration", {})
+        median_bias = postprocess.get("median_bias", {})
+        if median_bias:
+            self._validate_postprocess_validation_source(
+                median_bias,
+                "report.quantile_postprocess.median_bias",
+            )
+            group_by = median_bias.get("group_by")
+            if group_by is not None and group_by not in QUANTILE_CALIBRATION_GROUP_BY:
+                raise ValueError(
+                    "report.quantile_postprocess.median_bias.group_by must be one of "
+                    f"{sorted(QUANTILE_CALIBRATION_GROUP_BY)} when configured."
+                )
+            min_group_size = median_bias.get("min_group_size")
+            if min_group_size is not None and (not isinstance(min_group_size, int) or int(min_group_size) <= 0):
+                raise ValueError("report.quantile_postprocess.median_bias.min_group_size must be a positive integer.")
+            regime_threshold = median_bias.get("regime_threshold")
+            if regime_threshold is not None:
+                numeric_threshold = float(regime_threshold)
+                if not 0.0 < numeric_threshold < 1.0:
+                    raise ValueError("report.quantile_postprocess.median_bias.regime_threshold must be in (0, 1).")
+            max_abs_adjustment = median_bias.get("max_abs_adjustment")
+            if max_abs_adjustment is not None and float(max_abs_adjustment) <= 0.0:
+                raise ValueError("report.quantile_postprocess.median_bias.max_abs_adjustment must be > 0.")
         if not calibration:
             return
-        enabled = calibration.get("enabled")
-        if enabled is not None and not isinstance(enabled, bool):
-            raise ValueError("report.quantile_postprocess.calibration.enabled must be a boolean when configured.")
-        source_split = calibration.get("source_split", "validation")
-        if source_split not in {"validation"}:
-            raise ValueError("report.quantile_postprocess.calibration.source_split currently only supports 'validation'.")
+        self._validate_postprocess_validation_source(
+            calibration,
+            "report.quantile_postprocess.calibration",
+        )
         method = calibration.get("method", "cqr")
         if method not in QUANTILE_CALIBRATION_METHODS:
             raise ValueError(f"Unsupported report.quantile_postprocess.calibration.method={method!r}.")
@@ -496,6 +514,14 @@ class ProjectConfig:
                     raise ValueError(
                         "report.quantile_postprocess.calibration.interval_coverage_floors values must be in (0, 1)."
                     )
+
+    def _validate_postprocess_validation_source(self, config: dict[str, Any], prefix: str) -> None:
+        enabled = config.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise ValueError(f"{prefix}.enabled must be a boolean when configured.")
+        source_split = config.get("source_split", "validation")
+        if source_split not in {"validation"}:
+            raise ValueError(f"{prefix}.source_split currently only supports 'validation'.")
 
     def validate_scenario_evaluation_contracts(self) -> None:
         scenario_cfg = self.report.get("scenario_evaluation", {})

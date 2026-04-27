@@ -63,9 +63,6 @@ def resolve_mlp_unit_search_options(tuning_cfg: dict[str, object]) -> list[str]:
 class ArtifactStore:
     directories: dict[str, Path]
 
-    def raw_csv(self, filename: str) -> Path:
-        return self.directories["raw_data_dir"] / filename
-
     def feature_store(self) -> Path:
         return self.directories["processed_data_dir"] / "feature_store.parquet"
 
@@ -209,23 +206,6 @@ class ArtifactStore:
             )
         return runs
 
-    def iter_prediction_files(self, split: str | None = None) -> list[Path]:
-        files = sorted(self.directories["prediction_dir"].glob("*.parquet"))
-        if split is None:
-            return files
-
-        selected: list[Path] = []
-        for path in files:
-            try:
-                frame = pd.read_parquet(path, columns=["split"])
-            except (FileNotFoundError, ValueError, KeyError):
-                continue
-            if frame.empty:
-                continue
-            if frame["split"].iloc[0] == split:
-                selected.append(path)
-        return selected
-
     def export_report_bundle(self, split: str) -> list[Path]:
         report_dir = self.directories["report_dir"]
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -244,9 +224,6 @@ class ArtifactStore:
                 shutil.copy2(source, target)
                 copied.append(target)
         return copied
-
-    def export_report_assets(self, split: str) -> list[Path]:
-        return self.export_report_bundle(split)
 
     def _plot_path(self, split: str, kind: str) -> Path:
         if kind == "hourly_mae":
@@ -309,19 +286,6 @@ class ModelStore:
 
     def load_snapshot(self, name_or_path: str | Path = "nbeatsx_snapshot") -> ForecastModel:
         return load_model_snapshot(self._resolve_snapshot_path(name_or_path))
-
-    def load_nbeatsx_snapshot(self, name_or_path: str | Path = "nbeatsx_snapshot") -> ForecastModel:
-        return self.load_snapshot(name_or_path)
-
-    def predict_snapshot(
-        self,
-        name_or_path: str | Path,
-        *,
-        history_df: pd.DataFrame,
-        future_df: pd.DataFrame,
-    ) -> pd.DataFrame:
-        model = self.load_snapshot(name_or_path)
-        return model.predict(history_df=history_df, future_df=future_df)
 
     def predict_snapshot_to_parquet(
         self,
@@ -392,12 +356,14 @@ class Workspace:
             return
 
         best_params = json.loads(best_params_path.read_text(encoding="utf-8"))
-        best_params["mlp_units"] = decode_mlp_units(best_params.get("mlp_units"))
+        if "mlp_units" in best_params:
+            best_params["mlp_units"] = decode_mlp_units(best_params["mlp_units"])
         self.config.models[model_name].update(best_params)
         self._loaded_best_params.add(model_name)
 
     def build_model(self, model_name: str, *, seed: int | None = None, disable_ensemble: bool = False):
-        if model_name == "nbeatsx":
+        model_type = str(self.config.models[model_name].get("type", "")).lower()
+        if model_type in {"nbeatsx", "nhits"}:
             self._apply_best_params(model_name)
         return self._raw_build_model(model_name, seed=seed, disable_ensemble=disable_ensemble)
 
@@ -412,42 +378,46 @@ class Workspace:
             split_boundaries_path=self.artifacts.split_boundaries(),
         )
 
-    def tune_nbeatsx(self) -> None:
+    def tune_model(self) -> None:
         feature_df = self.feature_frame()
         self.schema().validate_nbeatsx_feature_frame(feature_df)
         split_boundaries = self.split_boundaries()
         validation_days = get_daily_split_days(feature_df, split_boundaries, split_name="validation")
         tuning_cfg = self.config.tuning
+        model_name = str(tuning_cfg["model_name"])
+        model_type = str(self.config.models[model_name].get("type", "")).lower()
+        if model_type not in {"nbeatsx", "nhits"}:
+            raise ValueError(f"Generic tuning only supports nbeatsx/nhits models, got {model_type!r} for {model_name!r}.")
         use_ensemble_in_tuning = bool(tuning_cfg.get("use_ensemble_in_tuning", False))
         metric_name = str(tuning_cfg.get("metric", "mae")).lower()
 
         def objective(trial: optuna.Trial) -> float:
-            self.config.models["nbeatsx"]["input_size"] = trial.suggest_categorical(
+            self.config.models[model_name]["input_size"] = trial.suggest_categorical(
                 "input_size",
                 tuning_cfg["search_space"]["input_size"],
             )
-            self.config.models["nbeatsx"]["learning_rate"] = trial.suggest_float(
+            self.config.models[model_name]["learning_rate"] = trial.suggest_float(
                 "learning_rate",
                 tuning_cfg["search_space"]["learning_rate"][0],
                 tuning_cfg["search_space"]["learning_rate"][1],
                 log=True,
             )
-            self.config.models["nbeatsx"]["batch_size"] = trial.suggest_categorical(
+            self.config.models[model_name]["batch_size"] = trial.suggest_categorical(
                 "batch_size",
                 tuning_cfg["search_space"]["batch_size"],
             )
-            self.config.models["nbeatsx"]["max_steps"] = trial.suggest_int(
+            self.config.models[model_name]["max_steps"] = trial.suggest_int(
                 "max_steps",
                 tuning_cfg["search_space"]["max_steps"][0],
                 tuning_cfg["search_space"]["max_steps"][1],
             )
-            self.config.models["nbeatsx"]["dropout_prob_theta"] = trial.suggest_float(
+            self.config.models[model_name]["dropout_prob_theta"] = trial.suggest_float(
                 "dropout_prob_theta",
                 tuning_cfg["search_space"]["dropout"][0],
                 tuning_cfg["search_space"]["dropout"][1],
             )
             mlp_units_key = trial.suggest_categorical("mlp_units", resolve_mlp_unit_search_options(tuning_cfg))
-            self.config.models["nbeatsx"]["mlp_units"] = decode_mlp_units(mlp_units_key)
+            self.config.models[model_name]["mlp_units"] = decode_mlp_units(mlp_units_key)
 
             predictions = run_rolling_backtest(
                 config=self.config,
@@ -455,17 +425,17 @@ class Workspace:
                 split_name="validation",
                 forecast_days=validation_days,
                 model_builder=lambda: self._raw_build_model(
-                    "nbeatsx",
+                    model_name,
                     seed=self.config.project["benchmark_seed"],
                     disable_ensemble=not use_ensemble_in_tuning,
                 ),
-                model_name="nbeatsx",
+                model_name=model_name,
                 seed=self.config.project["benchmark_seed"],
             )
             return float(compute_metrics(predictions)[metric_name])
 
         storage = tuning_cfg.get("optuna_storage")
-        study_name = tuning_cfg.get("optuna_study_name", "nbeatsx_tuning")
+        study_name = tuning_cfg.get("optuna_study_name", f"{model_name}_tuning")
         if storage:
             study = optuna.create_study(
                 study_name=study_name,
@@ -477,8 +447,11 @@ class Workspace:
             study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=tuning_cfg["n_trials"], catch=(RuntimeError, ValueError))
 
-        self.artifacts.best_params("nbeatsx").write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
-        self._loaded_best_params.discard("nbeatsx")
+        self.artifacts.best_params(model_name).write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
+        self._loaded_best_params.discard(model_name)
+
+    def tune_nbeatsx(self) -> None:
+        self.tune_model()
 
     def backtest(self, split: SplitName = "test") -> None:
         feature_df = self.feature_frame()
@@ -552,21 +525,6 @@ class Workspace:
             snapshot_name_or_path,
             history_df=history_df,
             future_df=future_df,
-            output_path=output_path,
-        )
-
-    def predict_nbeatsx_snapshot(
-        self,
-        *,
-        snapshot_name_or_path: str | Path = "nbeatsx_snapshot",
-        history_path: str | Path,
-        future_path: str | Path,
-        output_path: str | Path,
-    ) -> Path:
-        return self.predict_model_snapshot(
-            snapshot_name_or_path=snapshot_name_or_path,
-            history_path=history_path,
-            future_path=future_path,
             output_path=output_path,
         )
 

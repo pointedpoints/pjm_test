@@ -1,0 +1,16 @@
+validation_holdout_days: 91
+output_dir: ../../artifacts_phase2/qra_ensemble
+
+members:
+  - name: nbeatsx_current
+    validation_path: ../../artifacts_current/predictions/nbeatsx_validation_seed7.parquet
+    test_path: ../../artifacts_current/predictions/nbeatsx_test_seed7.parquet
+    interpolation_tail_policy: linear
+  - name: nhits_q50w150
+    validation_path: ../../artifacts_tmp/nhits_q50_weight_grid/predictions/nhits_q50w150_validation_seed7.parquet
+    test_path: ../../artifacts_tmp/nhits_q50_weight_grid/predictions/nhits_q50w150_test_seed7.parquet
+    interpolation_tail_policy: linear
+  - name: nhits_tail_spike_context
+    validation_path: ../../artifacts_tmp/nhits_tail_grid_weighted_long_spike_context/predictions/nhits_tail_grid_weighted_long_validation_seed7.parquet
+    test_path: ../../artifacts_tmp/nhits_tail_grid_weighted_long_spike_context/predictions/nhits_tail_grid_weighted_long_test_seed7.parquet
+    interpolation_tail_policy: linear

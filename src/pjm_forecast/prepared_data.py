@@ -191,9 +191,6 @@ class FeatureSchema:
                 columns.append(f"{source_column}_lag_{lag}")
         return columns
 
-    def load_lag_columns(self) -> list[str]:
-        return self.source_lag_columns()
-
     def feature_columns(self) -> list[str]:
         return [
             *self.panel_columns(),
@@ -225,9 +222,6 @@ class FeatureSchema:
             protected_exog_columns=self.nbeatsx_protected_exog_columns(),
         )
 
-    def retrieval_price_columns(self) -> list[str]:
-        return [self.config.target_column]
-
     def retrieval_load_columns(self) -> list[str]:
         return self.future_exog_columns()
 
@@ -237,12 +231,6 @@ class FeatureSchema:
             if column_name in DEFAULT_RETRIEVAL_CALENDAR_BASES:
                 columns.extend([f"{column_name}_sin", f"{column_name}_cos"])
         return columns
-
-    def retrieval_feature_columns(self) -> list[str]:
-        return [*self.retrieval_price_columns(), *self.retrieval_load_columns(), *self.retrieval_calendar_columns()]
-
-    def epftoolbox_alias_map(self) -> dict[str, str]:
-        return dict(EPF_ALIAS_MAP)
 
     def prediction_columns(self) -> list[str]:
         return list(PREDICTION_COLUMNS)

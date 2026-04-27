@@ -10,6 +10,7 @@ from .epftoolbox_wrappers import DNNModel, LEARModel
 from .nhits import NHITSModel
 from .nbeatsx import NBEATSxModel
 from .seasonal_naive import SeasonalNaiveModel
+from .tree_quantile import LightGBMQuantileModel, XGBoostQuantileModel
 
 
 def build_model(
@@ -46,6 +47,20 @@ def build_model(
             calibration_window_years=model_cfg["calibration_window_years"],
             auto_generate_hyperparameters=model_cfg["auto_generate_hyperparameters"],
             hyperopt_max_evals=model_cfg["hyperopt_max_evals"],
+        )
+    if model_type == "lightgbm_quantile":
+        return LightGBMQuantileModel(
+            feature_columns=[column for column in schema.feature_columns() if column not in {"unique_id", "ds", config.target_column}],
+            quantiles=[float(value) for value in model_cfg.get("quantiles", [])],
+            random_seed=seed if seed is not None else config.project["benchmark_seed"],
+            model_params={key: value for key, value in model_cfg.items() if key not in {"type", "loss_name", "quantiles"}},
+        )
+    if model_type == "xgboost_quantile":
+        return XGBoostQuantileModel(
+            feature_columns=[column for column in schema.feature_columns() if column not in {"unique_id", "ds", config.target_column}],
+            quantiles=[float(value) for value in model_cfg.get("quantiles", [])],
+            random_seed=seed if seed is not None else config.project["benchmark_seed"],
+            model_params={key: value for key, value in model_cfg.items() if key not in {"type", "loss_name", "quantiles"}},
         )
     if model_type == "nbeatsx":
         contract = schema.nbeatsx_exogenous_contract()

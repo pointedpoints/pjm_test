@@ -1,0 +1,191 @@
+project:
+  name: "pjm_current_validation_phase1_benchmark_floor"
+  random_seeds: [7]
+  benchmark_seed: 7
+  directories:
+    raw_data_dir: "../data/raw"
+    processed_data_dir: "../data/processed_phase1_benchmark_floor"
+    artifact_dir: "../artifacts_phase1/benchmark_floor"
+    hyperparameter_dir: "../artifacts_phase1/benchmark_floor/hyperparameters"
+    prediction_dir: "../artifacts_phase1/benchmark_floor/predictions"
+    metrics_dir: "../artifacts_phase1/benchmark_floor/metrics"
+    plots_dir: "../artifacts_phase1/benchmark_floor/plots"
+    report_dir: "../artifacts_phase1/benchmark_floor/report"
+
+dataset:
+  source_type: "official_weather_ready"
+  dataset_name: "PJM"
+  unique_id: "PJM_COMED"
+  source_url: "https://zenodo.org/records/4624805/files/PJM.csv"
+  local_csv_path: "../data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
+  source_filename: "PJM.csv"
+  start_date: "2021-01-01"
+  end_date: "2026-03-31"
+  timestamp_col: "Date"
+  price_col: "Zonal COMED price"
+  exogenous_columns:
+    system_load_forecast: "System load forecast"
+    zonal_load_forecast: "Zonal COMED load foecast"
+
+features:
+  target_col: "y"
+  future_exog:
+    - "system_load_forecast"
+    - "zonal_load_forecast"
+    - "weather_temp_mean"
+    - "weather_apparent_temp_mean"
+    - "weather_wind_speed_mean"
+    - "weather_cloud_cover_mean"
+    - "weather_precip_area_fraction"
+    - "heating_degree_18"
+    - "cooling_degree_22"
+    - "load_cooling_pressure"
+  price_lags: [24, 168]
+  lag_sources:
+    - "system_load_forecast"
+    - "zonal_load_forecast"
+    - "weather_temp_mean"
+    - "weather_apparent_temp_mean"
+  source_lags: [24, 168]
+  derived_features:
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "heating"
+      base: 18.0
+      name: "heating_degree_18"
+    - kind: "degree_day"
+      source: "weather_apparent_temp_mean"
+      mode: "cooling"
+      base: 22.0
+      name: "cooling_degree_22"
+    - kind: "multiply"
+      left: "zonal_load_forecast"
+      right: "cooling_degree_22"
+      name: "load_cooling_pressure"
+    - kind: "prior_day_price_stat"
+      source: "y"
+      stat: "max"
+      name: "prior_day_price_max"
+    - kind: "prior_day_price_stat"
+      source: "y"
+      stat: "max_ramp"
+      name: "prior_day_price_max_ramp"
+  cyclical:
+    hour: 24
+    day_of_week: 7
+    day_of_year: 366
+    month: 12
+  holiday_country: "US"
+  scaler:
+    enabled: true
+    strategy_candidates: ["none", "standard", "robust"]
+
+weather:
+  enabled: true
+  provider: "open_meteo_historical_forecast"
+  model: "best_match"
+  timezone: "America/Chicago"
+  cache_dir: "../data/raw/weather"
+  precipitation_area_fraction_threshold_mm: 0.1
+  output_columns:
+    - "weather_temp_mean"
+    - "weather_temp_spread"
+    - "weather_apparent_temp_mean"
+    - "weather_wind_speed_mean"
+    - "weather_cloud_cover_mean"
+    - "weather_precip_area_fraction"
+  points:
+    - name: "chicago_lakefront"
+      latitude: 41.885
+      longitude: -87.620
+      weight: 0.24
+    - name: "ohare_northwest"
+      latitude: 41.978
+      longitude: -87.904
+      weight: 0.18
+    - name: "north_suburbs"
+      latitude: 42.148
+      longitude: -87.800
+      weight: 0.14
+    - name: "west_suburbs"
+      latitude: 41.836
+      longitude: -88.243
+      weight: 0.18
+    - name: "southwest_suburbs"
+      latitude: 41.605
+      longitude: -87.793
+      weight: 0.14
+    - name: "south_suburbs"
+      latitude: 41.525
+      longitude: -87.635
+      weight: 0.12
+
+backtest:
+  horizon: 24
+  freq: "h"
+  years_test: 1
+  validation_days: 182
+  rolling_window_days: 728
+  retrain_weekday: 0
+  retrain_weekday_name: "MON"
+  seasonal_naive_lag_hours: 168
+  benchmark_models: ["seasonal_naive", "lear", "lightgbm_q", "xgboost_q"]
+
+tuning:
+  model_name: "lightgbm_q"
+  n_trials: 1
+  metric: "pinball"
+  use_ensemble_in_tuning: false
+  search_space:
+    input_size: [168]
+    learning_rate: [0.0005, 0.0005]
+    batch_size: [16]
+    max_steps: [100, 100]
+    dropout: [0.0, 0.0]
+    mlp_units:
+      - [256, 256]
+
+models:
+  seasonal_naive:
+    type: "seasonal_naive"
+  lear:
+    type: "lear"
+    calibration_window_days: 728
+  lightgbm_q:
+    type: "lightgbm_quantile"
+    loss_name: "mqloss"
+    quantiles: [0.10, 0.50, 0.90]
+    n_estimators: 200
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 40
+    subsample: 0.9
+    colsample_bytree: 0.9
+    reg_lambda: 0.0
+    n_jobs: -1
+  xgboost_q:
+    type: "xgboost_quantile"
+    loss_name: "mqloss"
+    quantiles: [0.10, 0.50, 0.90]
+    n_estimators: 200
+    learning_rate: 0.05
+    max_depth: 6
+    min_child_weight: 4.0
+    subsample: 0.9
+    colsample_bytree: 0.9
+    reg_lambda: 1.0
+    n_jobs: -1
+
+report:
+  primary_metric: "mae"
+  auxiliary_metrics: ["rmse", "smape", "pinball", "hourly_mae", "dm"]
+  include_high_volatility_week: true
+  quantile_postprocess:
+    monotonic: true
+    calibration:
+      enabled: false
+  scenario_evaluation:
+    enabled: false
+
+retrieval:
+  enabled: false

@@ -109,11 +109,12 @@ def test_feature_schema_exposes_model_column_groups() -> None:
     assert "zonal_load_forecast_lag_168" in hist_columns
 
 
-def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals() -> None:
+def test_current_processed_nhits_exogenous_contract_uses_minimal_hist_signals_and_hidden_spike_context() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     schema = FeatureSchema(config)
     contract = schema.nbeatsx_exogenous_contract()
 
+    assert config.backtest["benchmark_models"] == ["nhits_tail_grid_weighted_main"]
     assert "system_load_forecast" not in contract.signal_futr_exog_columns
     assert "system_load_forecast_lag_24" not in contract.hist_exog_columns
     assert "zonal_load_forecast" in contract.signal_futr_exog_columns
@@ -128,6 +129,10 @@ def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals(
     assert "price_lag_168" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_24" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_168" not in contract.hist_exog_columns
+    assert "prior_day_price_max_ramp" not in contract.signal_futr_exog_columns
+    assert "spike_score" not in contract.signal_futr_exog_columns
+    assert "prior_day_price_max_ramp" in schema.feature_columns()
+    assert "spike_score" in schema.feature_columns()
     assert contract.future_only_signal_columns() == [
         "weather_temp_mean",
         "weather_temp_spread",
