@@ -29,12 +29,21 @@ def _future_slice(feature_df: pd.DataFrame, forecast_day: pd.Timestamp, horizon:
 
 def _prediction_context_columns(config: ProjectConfig, future_df: pd.DataFrame) -> list[str]:
     columns = ["ds", "y"]
-    calibration_cfg = config.report.get("quantile_postprocess", {}).get("calibration", {})
-    if calibration_cfg.get("group_by") == "hour_x_regime":
-        regime_column = str(calibration_cfg.get("regime_score_column", "spike_score"))
+    postprocess_cfg = config.report.get("quantile_postprocess", {})
+    for section in ["calibration", "median_bias"]:
+        section_cfg = postprocess_cfg.get(section, {})
+        if not isinstance(section_cfg, dict):
+            continue
+        group_by = section_cfg.get("group_by")
+        if group_by != "hour_x_regime" and "regime_score_column" not in section_cfg:
+            continue
+        regime_column = str(section_cfg.get("regime_score_column", "spike_score"))
         if regime_column not in future_df.columns:
-            raise ValueError(f"hour_x_regime calibration requires future feature column {regime_column!r}.")
-        columns.append(regime_column)
+            if group_by == "hour_x_regime":
+                raise ValueError(f"hour_x_regime calibration requires future feature column {regime_column!r}.")
+            raise ValueError(f"prediction context requires future feature column {regime_column!r}.")
+        if regime_column not in columns:
+            columns.append(regime_column)
     return columns
 
 

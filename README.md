@@ -20,7 +20,8 @@ This config uses:
 
 The promoted mainline model is `nhits_tail_grid_weighted_main`. It uses a dense
 upper-tail quantile grid through `q0.995`, weighted Huber multi-quantile loss,
-and `hour_x_regime` CQR calibration using `spike_score` as postprocess context.
+and hourly CQR calibration. `spike_score` is retained as postprocess diagnostic
+context but is not used as the promoted CQR grouping key.
 
 ## Environment
 
@@ -110,8 +111,8 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
   files into a new prediction directory while joining context columns from the
   configured feature store by `ds`. Use it for postprocess-only branches that
   reuse a baseline model body but need calibration context such as
-  `spike_score`; the canonical backtest writes required `hour_x_regime`
-  context directly.
+  `spike_score`; the canonical backtest writes configured `spike_score`
+  diagnostic context directly.
 - `scripts/experiments/evaluate_hour_x_regime_grid.py` compares `hour_cqr`
   against candidate `hour_x_regime` thresholds on existing validation/test
   prediction parquet files without retraining.

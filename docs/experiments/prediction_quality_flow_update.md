@@ -80,3 +80,7 @@ Decision: do not promote `hour_x_regime` over `hour_cqr` from this grid. The
 pinball, test pinball, q99 exceedance, and q99 excess are worse. Keep it as a
 diagnostic branch until rolling-safe predictions are regenerated and pass the
 quality gate.
+
+Canonical config is therefore set back to hourly CQR (`group_by: "hour"`).
+`spike_score` remains configured as a prediction context column so evaluation
+can still write spike diagnostics from fresh canonical backtests.

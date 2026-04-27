@@ -194,7 +194,7 @@ report:
     median_bias:
       enabled: false
       source_split: "validation"
-      group_by: "hour_x_regime"
+      group_by: "hour"
       regime_score_column: "spike_score"
       regime_threshold: 0.50
       min_group_size: 24
@@ -203,7 +203,7 @@ report:
       enabled: true
       source_split: "validation"
       method: "cqr_asymmetric"
-      group_by: "hour_x_regime"
+      group_by: "hour"
       regime_score_column: "spike_score"
       regime_threshold: 0.50
       min_group_size: 24

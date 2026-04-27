@@ -76,14 +76,14 @@ def test_current_processed_config_uses_nhits_tail_grid_contract() -> None:
     assert postprocess_cfg["monotonic"] is True
     assert postprocess_cfg["median_bias"]["enabled"] is False
     assert postprocess_cfg["median_bias"]["source_split"] == "validation"
-    assert postprocess_cfg["median_bias"]["group_by"] == "hour_x_regime"
+    assert postprocess_cfg["median_bias"]["group_by"] == "hour"
     assert postprocess_cfg["median_bias"]["regime_score_column"] == "spike_score"
     assert postprocess_cfg["median_bias"]["regime_threshold"] == 0.50
     assert postprocess_cfg["median_bias"]["max_abs_adjustment"] == 20.0
     assert postprocess_cfg["calibration"]["enabled"] is True
     assert postprocess_cfg["calibration"]["source_split"] == "validation"
     assert postprocess_cfg["calibration"]["method"] == "cqr_asymmetric"
-    assert postprocess_cfg["calibration"]["group_by"] == "hour_x_regime"
+    assert postprocess_cfg["calibration"]["group_by"] == "hour"
     assert postprocess_cfg["calibration"]["regime_score_column"] == "spike_score"
     assert postprocess_cfg["calibration"]["regime_threshold"] == 0.50
     assert postprocess_cfg["calibration"]["min_group_size"] == 24
