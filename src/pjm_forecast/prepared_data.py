@@ -132,6 +132,11 @@ class FeatureSchema:
                 if source != self.config.target_column and source not in dependencies:
                     dependencies.append(source)
                 continue
+            if kind == "future_known_lag":
+                source = str(spec.get("source", self.config.target_column))
+                if source not in dependencies:
+                    dependencies.append(source)
+                continue
             if kind == "spike_score":
                 for input_item in spec.get("inputs", []):
                     source = str(input_item["source"])
@@ -326,6 +331,11 @@ class FeatureSchema:
                 source = str(spec.get("source", self.config.target_column))
                 stat = str(spec["stat"])
                 feature_df[name] = self._prior_day_price_stat(feature_df, source=source, stat=stat)
+                continue
+            if kind == "future_known_lag":
+                source = str(spec.get("source", self.config.target_column))
+                lag = int(spec["lag"])
+                feature_df[name] = feature_df[source].shift(lag).fillna(0.0).astype(float)
                 continue
             if kind == "spike_score":
                 feature_df[name] = self._spike_score(feature_df, spec)

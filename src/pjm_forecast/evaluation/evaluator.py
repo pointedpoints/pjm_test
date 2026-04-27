@@ -8,6 +8,7 @@ import pandas as pd
 
 from .dm import dm_test
 from .metrics import compute_metrics, compute_quantile_diagnostics
+from .regime_metrics import compute_regime_metrics
 from .reporting import plot_high_volatility_week, plot_hourly_mae
 from .scenarios import compute_scenario_diagnostics
 from pjm_forecast.prediction_contract import point_prediction_view, quantile_values
@@ -50,6 +51,8 @@ class _ArtifactStoreLike(Protocol):
     def write_metrics(self, split: str, metrics_df: pd.DataFrame) -> Path: ...
 
     def write_quantile_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
+
+    def write_regime_metrics(self, split: str, regime_metrics_df: pd.DataFrame) -> Path: ...
 
     def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
@@ -217,6 +220,19 @@ class Evaluator:
         diagnostics_df = diagnostics_df.sort_values(["model", "seed", "run"]).reset_index(drop=True)
         self.artifacts.write_quantile_diagnostics(bundle.split, diagnostics_df)
         return diagnostics_df
+
+    def compute_regime_metrics(self, bundle: EvaluationBundle) -> pd.DataFrame:
+        rows = []
+        for run in bundle.runs:
+            regime_df = compute_regime_metrics(run.frame)
+            regime_df.insert(0, "seed", run.seed)
+            regime_df.insert(0, "model", run.model)
+            regime_df.insert(0, "run", run.name)
+            rows.append(regime_df)
+        metrics_df = pd.concat(rows, axis=0, ignore_index=True)
+        metrics_df = metrics_df.sort_values(["model", "seed", "run", "regime"]).reset_index(drop=True)
+        self.artifacts.write_regime_metrics(bundle.split, metrics_df)
+        return metrics_df
 
     def compute_scenario_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
         scenario_cfg = self.schema.config.report.get("scenario_evaluation", {})

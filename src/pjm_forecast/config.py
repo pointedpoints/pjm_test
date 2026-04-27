@@ -113,6 +113,8 @@ class ProjectConfig:
                 return set()
             if kind == "prior_day_price_stat":
                 return {str(item.get("source", self.target_column))}
+            if kind == "future_known_lag":
+                return {str(item.get("source", self.target_column))}
             if kind == "spike_score":
                 return {str(input_item["source"]) for input_item in item.get("inputs", [])}
             return set()
@@ -361,6 +363,13 @@ class ProjectConfig:
                     raise ValueError(f"derived_features source {source!r} must already exist before deriving {name!r}.")
                 if stat not in {"spread", "max_ramp", "max", "min", "mean"}:
                     raise ValueError(f"derived_features prior_day_price_stat stat={stat!r} is unsupported for {name!r}.")
+            elif kind == "future_known_lag":
+                source = str(item.get("source", self.target_column))
+                lag = int(item.get("lag", 0))
+                if source not in available_feature_names:
+                    raise ValueError(f"derived_features source {source!r} must already exist before deriving {name!r}.")
+                if lag <= 0:
+                    raise ValueError(f"derived_features future_known_lag requires lag >= 1 for {name!r}.")
             elif kind == "spike_score":
                 inputs = item.get("inputs", [])
                 if not isinstance(inputs, list) or not inputs:

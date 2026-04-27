@@ -82,6 +82,9 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - Timestamps stay in timezone-naive local time. Do not remap to UTC in v1.
 - Calendar features are derived from the `ds` local hourly sequence. Do not mix
   UTC-remapped timestamps into feature, split, lag, or forecast-window logic.
+- Forecast issue-time and feature availability rules are documented in
+  `docs/protocol/forecast_issue_time.md` and
+  `docs/protocol/feature_availability_matrix.md`.
 - Canonical panel columns include `unique_id`, `ds`, `y`, and configured future exogenous signals.
 - NeuralForecast models (`NBEATSx`/`NHITS`) use:
   - future exogenous signals plus calendar columns as `futr_exog`
@@ -111,6 +114,9 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - `docs/experiments/` records small human-readable summaries for experiment
   decisions. Generated prediction, metrics, plot, and scenario artifacts remain
   under `artifacts*` directories and should not be treated as source of truth.
+- Evaluation writes `{split}_regime_metrics.csv` alongside scalar metrics and
+  quantile diagnostics so P50 and upper-tail behavior can be reviewed by price
+  regime before promotion.
 
 ## Splits
 

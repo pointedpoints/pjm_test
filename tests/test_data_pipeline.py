@@ -320,6 +320,33 @@ def test_feature_schema_builds_prior_day_price_stat_features(tmp_path: Path) -> 
     assert "prior_day_price_spread" in prepared.schema.nbeatsx_futr_exog_columns()
 
 
+def test_feature_schema_builds_future_known_price_lag_features(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].append("future_price_lag_168"),
+            payload["features"].setdefault("derived_features", []).append(
+                {
+                    "kind": "future_known_lag",
+                    "source": "y",
+                    "lag": 168,
+                    "name": "future_price_lag_168",
+                }
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path, hours=24 * 1000)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert "future_price_lag_168" in prepared.feature_df.columns
+    assert "future_price_lag_168" in prepared.schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_168" not in prepared.schema.nbeatsx_hist_exog_columns()
+    assert prepared.feature_df["future_price_lag_168"].iloc[0] == 0.0
+    assert prepared.feature_df["future_price_lag_168"].iloc[168] == 0.0
+    assert prepared.feature_df["future_price_lag_168"].iloc[169] == 1.0
+
+
 def test_feature_schema_builds_spike_score_feature(tmp_path: Path) -> None:
     config_path = _write_temp_config(
         tmp_path,

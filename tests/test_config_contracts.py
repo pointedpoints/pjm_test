@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from pjm_forecast.config import load_config
+from pjm_forecast.prepared_data import FeatureSchema
 
 
 def _write_temp_config(tmp_path: Path, mutate) -> Path:
@@ -189,6 +190,44 @@ def test_phase1_p50_friendly_neural_config_uses_restored_features_and_moderate_q
     assert nhits_cfg["monotonicity_penalty"] == 0.01
     assert nbeatsx_cfg["quantile_weights"] == nhits_cfg["quantile_weights"]
     assert nbeatsx_cfg["quantile_deltas"] == nhits_cfg["quantile_deltas"]
+    assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert config.report["scenario_evaluation"]["enabled"] is False
+
+
+def test_p50_future_price_lag_experiment_configs_use_horizon_aligned_lags() -> None:
+    lag168 = load_config(Path("configs/experiments/pjm_current_p50_futr_lag168.yaml"))
+    lag168_336 = load_config(Path("configs/experiments/pjm_current_p50_futr_lag168_336.yaml"))
+
+    lag168_schema = FeatureSchema(lag168)
+    lag168_336_schema = FeatureSchema(lag168_336)
+
+    assert lag168.backtest["benchmark_models"] == ["nhits_p50_futr_lag168"]
+    assert lag168_336.backtest["benchmark_models"] == ["nhits_p50_futr_lag168_336"]
+    assert "future_price_lag_168" in lag168_schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_168" not in lag168_schema.nbeatsx_hist_exog_columns()
+    assert "future_price_lag_336" not in lag168_schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_168" in lag168_336_schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_336" in lag168_336_schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_336" not in lag168_336_schema.nbeatsx_hist_exog_columns()
+    assert any(item.get("kind") == "future_known_lag" for item in lag168.features["derived_features"])
+    assert lag168.report["quantile_postprocess"]["calibration"]["enabled"] is False
+    assert lag168.report["scenario_evaluation"]["enabled"] is False
+
+
+def test_p50_price_state_experiment_config_uses_prior_day_state_as_model_features() -> None:
+    config = load_config(Path("configs/experiments/pjm_current_p50_price_state.yaml"))
+    schema = FeatureSchema(config)
+
+    assert config.backtest["benchmark_models"] == ["nhits_p50_price_state"]
+    for column in ["prior_day_price_max", "prior_day_price_spread", "prior_day_price_max_ramp"]:
+        assert column in schema.nbeatsx_futr_exog_columns()
+        assert column not in schema.nbeatsx_hist_exog_columns()
+    stats = {item["name"]: item["stat"] for item in config.features["derived_features"] if item.get("kind") == "prior_day_price_stat"}
+    assert stats == {
+        "prior_day_price_max": "max",
+        "prior_day_price_spread": "spread",
+        "prior_day_price_max_ramp": "max_ramp",
+    }
     assert config.report["quantile_postprocess"]["calibration"]["enabled"] is False
     assert config.report["scenario_evaluation"]["enabled"] is False
 
