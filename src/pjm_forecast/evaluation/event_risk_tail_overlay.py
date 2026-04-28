@@ -13,6 +13,9 @@ from pjm_forecast.prediction_contract import enforce_monotonic_quantiles, is_qua
 from pjm_forecast.quantile_postprocess import postprocess_quantile_predictions
 
 
+PEAK_HOURS = (7, 16, 17, 18, 19, 20, 21)
+
+
 @dataclass(frozen=True)
 class EventRiskTailOverlay:
     risk_score_column: str
@@ -21,6 +24,7 @@ class EventRiskTailOverlay:
     residual_quantile: float
     uplift: float
     target_quantiles: tuple[float, ...]
+    active_hours: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ def evaluate_event_risk_tail_overlay_grid(
     calibration_min_group_size: int = 24,
     interval_coverage_floors: dict[str, float] | None = None,
     regime_threshold: float = 0.50,
+    active_hour_sets: Iterable[str] = ("all",),
 ) -> EventRiskTailOverlayGridResult:
     validation_calibration, validation_eval = split_validation_holdout(
         validation_frame,
@@ -78,6 +83,7 @@ def evaluate_event_risk_tail_overlay_grid(
         calibration_min_group_size=calibration_min_group_size,
         interval_coverage_floors=interval_coverage_floors,
         regime_threshold=regime_threshold,
+        active_hour_sets=active_hour_sets,
     )
     test_summary = pd.DataFrame()
     if test_frame is not None:
@@ -96,6 +102,7 @@ def evaluate_event_risk_tail_overlay_grid(
             calibration_min_group_size=calibration_min_group_size,
             interval_coverage_floors=interval_coverage_floors,
             regime_threshold=regime_threshold,
+            active_hour_sets=active_hour_sets,
         )
     return EventRiskTailOverlayGridResult(validation_summary=validation_summary, test_summary=test_summary)
 
@@ -117,6 +124,8 @@ def build_event_risk_tail_overlay_audit_artifacts(
     interval_coverage_floors: dict[str, float] | None = None,
     regime_threshold: float = 0.50,
     risk_score_input_columns: Iterable[str] | None = None,
+    active_hour_set: str = "all",
+    conservative_active_hour_sets: Iterable[str] = ("all", "peak_hours"),
 ) -> EventRiskTailOverlayAuditArtifacts:
     validation_calibration, validation_eval = split_validation_holdout(
         validation_frame,
@@ -136,6 +145,7 @@ def build_event_risk_tail_overlay_audit_artifacts(
         calibration_min_group_size=calibration_min_group_size,
         interval_coverage_floors=interval_coverage_floors,
         regime_threshold=regime_threshold,
+        active_hour_set=active_hour_set,
     )
     before_after: dict[str, tuple[pd.DataFrame, pd.DataFrame, EventRiskTailOverlay]] = {
         "validation_holdout": (validation_before, validation_after, validation_overlay)
@@ -155,6 +165,7 @@ def build_event_risk_tail_overlay_audit_artifacts(
             calibration_min_group_size=calibration_min_group_size,
             interval_coverage_floors=interval_coverage_floors,
             regime_threshold=regime_threshold,
+            active_hour_set=active_hour_set,
         )
         before_after["test"] = (test_before, test_after, test_overlay)
 
@@ -167,9 +178,17 @@ def build_event_risk_tail_overlay_audit_artifacts(
         "residual_source": "raw_monotonic",
         "overlay_application_order": "after_hourly_cqr",
         "target_quantiles": list(reference_overlay.target_quantiles),
+        "active_hour_set": _active_hour_set_label(reference_overlay.active_hours),
+        "active_hours": list(reference_overlay.active_hours or []),
         "q50_changed": _quantile_changed(reference_before, reference_after, 0.50),
         "crossing_after_overlay": compute_quantile_diagnostics(reference_after)["crossing_rate"],
-        "selected_variant": _variant_name(risk_aggregation, risk_threshold_quantile, residual_quantile, max_uplift),
+        "selected_variant": _variant_name(
+            risk_aggregation,
+            risk_threshold_quantile,
+            residual_quantile,
+            max_uplift,
+            _active_hour_set_label(reference_overlay.active_hours),
+        ),
     }
     spike_score_audit = {
         "risk_score_column": risk_score_column,
@@ -218,6 +237,7 @@ def build_event_risk_tail_overlay_audit_artifacts(
                 calibration_min_group_size=calibration_min_group_size,
                 interval_coverage_floors=interval_coverage_floors,
                 regime_threshold=regime_threshold,
+                active_hour_sets=conservative_active_hour_sets,
             )
         ],
         ignore_index=True,
@@ -260,6 +280,7 @@ def evaluate_event_risk_tail_overlay_variants(
     calibration_min_group_size: int = 24,
     interval_coverage_floors: dict[str, float] | None = None,
     regime_threshold: float = 0.50,
+    active_hour_sets: Iterable[str] = ("all",),
 ) -> pd.DataFrame:
     calibration_base = enforce_monotonic_quantiles(calibration_frame)
     eval_post = _hourly_cqr(
@@ -285,30 +306,34 @@ def evaluate_event_risk_tail_overlay_variants(
         for risk_threshold_quantile in risk_threshold_quantiles:
             for residual_quantile in residual_quantiles:
                 for max_uplift in max_uplifts:
-                    overlay = fit_event_risk_tail_overlay(
-                        calibration_base,
-                        risk_score_column=risk_score_column,
-                        risk_threshold_quantile=float(risk_threshold_quantile),
-                        risk_aggregation=str(risk_aggregation),
-                        residual_quantile=float(residual_quantile),
-                        max_uplift=float(max_uplift),
-                        target_quantiles=target_quantiles,
-                    )
-                    adjusted = apply_event_risk_tail_overlay(eval_post, overlay)
-                    rows.append(
-                        _summarize_variant(
-                            adjusted,
-                            mode=mode,
-                            variant=_variant_name(
-                                str(risk_aggregation),
-                                risk_threshold_quantile,
-                                residual_quantile,
-                                max_uplift,
-                            ),
+                    for active_hour_set in active_hour_sets:
+                        active_hour_label, active_hours = _resolve_active_hour_set(active_hour_set)
+                        overlay = fit_event_risk_tail_overlay(
+                            calibration_base,
                             risk_score_column=risk_score_column,
-                            overlay=overlay,
+                            risk_threshold_quantile=float(risk_threshold_quantile),
+                            risk_aggregation=str(risk_aggregation),
+                            residual_quantile=float(residual_quantile),
+                            max_uplift=float(max_uplift),
+                            target_quantiles=target_quantiles,
+                            active_hours=active_hours,
                         )
-                    )
+                        adjusted = apply_event_risk_tail_overlay(eval_post, overlay)
+                        rows.append(
+                            _summarize_variant(
+                                adjusted,
+                                mode=mode,
+                                variant=_variant_name(
+                                    str(risk_aggregation),
+                                    risk_threshold_quantile,
+                                    residual_quantile,
+                                    max_uplift,
+                                    active_hour_label,
+                                ),
+                                risk_score_column=risk_score_column,
+                                overlay=overlay,
+                            )
+                        )
     return pd.DataFrame(rows).sort_values(["pinball", "q99_excess_mean", "variant"]).reset_index(drop=True)
 
 
@@ -321,6 +346,7 @@ def fit_event_risk_tail_overlay(
     residual_quantile: float = 0.75,
     max_uplift: float | None = None,
     target_quantiles: Iterable[float] = (0.99, 0.995),
+    active_hours: Iterable[int] | None = None,
 ) -> EventRiskTailOverlay:
     _validate_prediction_frame(predictions, risk_score_column)
     risk_threshold_quantile = _bounded_unit_interval(risk_threshold_quantile, "risk_threshold_quantile")
@@ -330,6 +356,7 @@ def fit_event_risk_tail_overlay(
         raise ValueError("target_quantiles must contain at least one quantile.")
     if max_uplift is not None and float(max_uplift) <= 0.0:
         raise ValueError("max_uplift must be > 0 when configured.")
+    active_hour_tuple = _normalize_active_hours(active_hours)
 
     corrected = enforce_monotonic_quantiles(predictions)
     daily_risk = _daily_risk_scores(corrected, risk_score_column, risk_aggregation)
@@ -343,7 +370,10 @@ def fit_event_risk_tail_overlay(
     y_true = corrected.groupby("ds", sort=True)["y"].first()
     residual = y_true.reindex(grid.index).astype(float) - grid[q99_column].astype(float)
     days = pd.DatetimeIndex(grid.index).floor("D")
-    active_residual = residual.loc[pd.Index(days).isin(high_risk_days)].clip(lower=0.0)
+    active_mask = pd.Index(days).isin(high_risk_days)
+    if active_hour_tuple is not None:
+        active_mask &= pd.DatetimeIndex(grid.index).hour.isin(active_hour_tuple)
+    active_residual = residual.loc[active_mask].clip(lower=0.0)
     uplift = 0.0 if active_residual.empty else float(np.quantile(active_residual.to_numpy(dtype=float), residual_quantile))
     if max_uplift is not None:
         uplift = float(np.clip(uplift, 0.0, float(max_uplift)))
@@ -355,6 +385,7 @@ def fit_event_risk_tail_overlay(
         residual_quantile=residual_quantile,
         uplift=uplift,
         target_quantiles=target_quantile_tuple,
+        active_hours=active_hour_tuple,
     )
 
 
@@ -366,8 +397,10 @@ def apply_event_risk_tail_overlay(
     corrected = predictions.copy()
     daily_risk = _daily_risk_scores(corrected, overlay.risk_score_column, overlay.risk_aggregation)
     active_days = set(daily_risk[daily_risk >= overlay.risk_threshold].index)
-    days = pd.to_datetime(corrected["ds"]).dt.floor("D")
-    day_mask = days.isin(active_days)
+    timestamps = pd.to_datetime(corrected["ds"])
+    day_mask = timestamps.dt.floor("D").isin(active_days)
+    if overlay.active_hours is not None:
+        day_mask &= timestamps.dt.hour.isin(overlay.active_hours)
     quantile_values = corrected["quantile"].astype(float)
     quantile_mask = np.zeros(len(corrected), dtype=bool)
     for quantile in overlay.target_quantiles:
@@ -393,6 +426,7 @@ def _before_after_frames(
     calibration_min_group_size: int,
     interval_coverage_floors: dict[str, float] | None,
     regime_threshold: float,
+    active_hour_set: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, EventRiskTailOverlay]:
     before = _hourly_cqr(
         eval_frame,
@@ -404,6 +438,7 @@ def _before_after_frames(
         risk_score_column=risk_score_column,
         regime_threshold=regime_threshold,
     )
+    _, active_hours = _resolve_active_hour_set(active_hour_set)
     overlay = fit_event_risk_tail_overlay(
         enforce_monotonic_quantiles(calibration_frame),
         risk_score_column=risk_score_column,
@@ -412,6 +447,7 @@ def _before_after_frames(
         residual_quantile=residual_quantile,
         max_uplift=max_uplift,
         target_quantiles=target_quantiles,
+        active_hours=active_hours,
     )
     after = apply_event_risk_tail_overlay(before, overlay)
     return before, after, overlay
@@ -704,6 +740,8 @@ def _summarize_variant(
         "residual_quantile": overlay.residual_quantile if overlay else np.nan,
         "uplift": overlay.uplift if overlay else 0.0,
         "target_quantiles": ",".join(str(value) for value in overlay.target_quantiles) if overlay else "",
+        "active_hour_set": _active_hour_set_label(overlay.active_hours) if overlay else "none",
+        "active_hours": ",".join(str(value) for value in overlay.active_hours or ()) if overlay else "",
     }
     row.update(compute_metrics(frame))
     row.update(compute_quantile_diagnostics(frame))
@@ -711,8 +749,15 @@ def _summarize_variant(
     daily_risk = _daily_risk_scores(frame, risk_score_column, overlay.risk_aggregation if overlay else "mean")
     if overlay is None:
         row["active_day_share"] = 0.0
+        row["active_hour_share"] = 0.0
     else:
         row["active_day_share"] = float((daily_risk >= overlay.risk_threshold).mean())
+        point = _point_context(frame, risk_score_column)
+        active_days = set(daily_risk[daily_risk >= overlay.risk_threshold].index)
+        active_mask = point["day"].isin(active_days)
+        if overlay.active_hours is not None:
+            active_mask &= point["ds"].dt.hour.isin(overlay.active_hours)
+        row["active_hour_share"] = float(active_mask.mean())
     return row
 
 
@@ -721,12 +766,47 @@ def _variant_name(
     risk_threshold_quantile: float,
     residual_quantile: float,
     max_uplift: float,
+    active_hour_set: str = "all",
 ) -> str:
     threshold_label = _percent_label(float(risk_threshold_quantile))
     residual_label = _percent_label(float(residual_quantile))
     cap = float(max_uplift)
     cap_label = int(cap) if cap.is_integer() else str(cap).replace(".", "p")
-    return f"overlay_{risk_aggregation}_p{threshold_label}_r{residual_label}_cap{cap_label}"
+    base = f"overlay_{risk_aggregation}_p{threshold_label}_r{residual_label}_cap{cap_label}"
+    if active_hour_set == "all":
+        return base
+    return f"{base}_{active_hour_set}"
+
+
+def _resolve_active_hour_set(active_hour_set: str) -> tuple[str, tuple[int, ...] | None]:
+    normalized = str(active_hour_set).strip().lower().replace("-", "_")
+    if normalized in {"", "all", "all_hours", "none"}:
+        return "all", None
+    if normalized in {"peak", "peak_hours", "peak_hours_only"}:
+        return "peak_hours", PEAK_HOURS
+    if normalized == "evening_peak":
+        return "evening_peak", (16, 17, 18, 19, 20, 21)
+    raise ValueError(f"Unsupported active_hour_set: {active_hour_set!r}")
+
+
+def _normalize_active_hours(active_hours: Iterable[int] | None) -> tuple[int, ...] | None:
+    if active_hours is None:
+        return None
+    parsed = tuple(sorted({int(value) for value in active_hours}))
+    for hour in parsed:
+        if hour < 0 or hour > 23:
+            raise ValueError(f"active_hours values must be in [0, 23], got {hour}.")
+    return parsed or None
+
+
+def _active_hour_set_label(active_hours: tuple[int, ...] | None) -> str:
+    if active_hours is None:
+        return "all"
+    if active_hours == PEAK_HOURS:
+        return "peak_hours"
+    if active_hours == (16, 17, 18, 19, 20, 21):
+        return "evening_peak"
+    return "hours_" + "_".join(str(value) for value in active_hours)
 
 
 def _percent_label(value: float) -> str:

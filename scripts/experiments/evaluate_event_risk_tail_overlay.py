@@ -87,6 +87,7 @@ def main() -> None:
     parser.add_argument("--residual-quantiles", nargs="+", default=["0.50", "0.75", "0.90"])
     parser.add_argument("--max-uplifts", nargs="+", default=["25", "50", "100"])
     parser.add_argument("--target-quantiles", nargs="+", default=["0.99", "0.995"])
+    parser.add_argument("--active-hour-sets", nargs="+", default=["all"], help="Overlay application hour sets.")
     parser.add_argument("--validation-holdout-days", type=int, default=91)
     parser.add_argument("--calibration-min-group-size", type=int, default=24)
     parser.add_argument("--regime-threshold", type=float, default=0.50)
@@ -94,6 +95,7 @@ def main() -> None:
     parser.add_argument("--selected-risk-threshold-quantile", type=float, default=0.90)
     parser.add_argument("--selected-residual-quantile", type=float, default=1.00)
     parser.add_argument("--selected-max-uplift", type=float, default=50.0)
+    parser.add_argument("--selected-active-hour-set", default="all")
     parser.add_argument(
         "--interval-coverage-floor",
         nargs="*",
@@ -120,6 +122,7 @@ def main() -> None:
         calibration_min_group_size=int(args.calibration_min_group_size),
         interval_coverage_floors=_parse_interval_coverage_floors(args.interval_coverage_floor),
         regime_threshold=float(args.regime_threshold),
+        active_hour_sets=_parse_strings(list(args.active_hour_sets)),
     )
 
     output_dir = Path(args.output_dir)
@@ -142,6 +145,8 @@ def main() -> None:
         interval_coverage_floors=_parse_interval_coverage_floors(args.interval_coverage_floor),
         regime_threshold=float(args.regime_threshold),
         risk_score_input_columns=_spike_score_input_columns(args.config, risk_score_column),
+        active_hour_set=str(args.selected_active_hour_set),
+        conservative_active_hour_sets=_parse_strings(list(args.active_hour_sets)),
     )
     _write_json(output_dir / "overlay_implementation_audit.json", audit.implementation_audit)
     _write_json(output_dir / "spike_score_audit.json", audit.spike_score_audit)

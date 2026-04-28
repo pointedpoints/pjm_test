@@ -66,6 +66,42 @@ def test_event_risk_tail_overlay_uses_calibration_only_for_threshold_and_uplift(
     assert grid.loc[pd.Timestamp("2026-02-02 00:00:00"), 0.995] == pytest.approx(65.0)
 
 
+def test_event_risk_tail_overlay_can_be_limited_to_active_peak_hours() -> None:
+    calibration = _frame(
+        [
+            ("2026-01-01 00:00:00", 100.0, 100.0, 0.20),
+            ("2026-01-02 00:00:00", 180.0, 100.0, 0.95),
+            ("2026-01-02 19:00:00", 130.0, 100.0, 0.95),
+        ]
+    )
+    overlay = fit_event_risk_tail_overlay(
+        calibration,
+        risk_score_column="spike_score",
+        risk_threshold_quantile=0.5,
+        risk_aggregation="mean",
+        residual_quantile=1.0,
+        max_uplift=50.0,
+        target_quantiles=[0.99, 0.995],
+        active_hours=[19],
+    )
+
+    assert overlay.uplift == pytest.approx(30.0)
+    assert overlay.active_hours == (19,)
+
+    evaluation = _frame(
+        [
+            ("2026-02-02 00:00:00", 200.0, 100.0, 0.95),
+            ("2026-02-02 19:00:00", 200.0, 100.0, 0.95),
+        ]
+    )
+    adjusted = apply_event_risk_tail_overlay(evaluation, overlay)
+    grid = adjusted.pivot(index="ds", columns="quantile", values="y_pred")
+
+    assert grid.loc[pd.Timestamp("2026-02-02 00:00:00"), 0.99] == pytest.approx(100.0)
+    assert grid.loc[pd.Timestamp("2026-02-02 19:00:00"), 0.99] == pytest.approx(130.0)
+    assert grid.loc[pd.Timestamp("2026-02-02 19:00:00"), 0.995] == pytest.approx(135.0)
+
+
 def test_evaluate_event_risk_tail_overlay_grid_reports_baseline_and_candidates() -> None:
     validation = _frame(
         [
@@ -90,15 +126,16 @@ def test_evaluate_event_risk_tail_overlay_grid_reports_baseline_and_candidates()
         residual_quantiles=[0.5],
         max_uplifts=[50.0],
         target_quantiles=[0.99, 0.995],
+        active_hour_sets=["all", "peak_hours"],
         interval_coverage_floors=None,
     )
 
     validation_variants = set(result.validation_summary["variant"])
     test_variants = set(result.test_summary["variant"])
 
-    assert {"hour_cqr", "overlay_mean_p50_r50_cap50"} <= validation_variants
+    assert {"hour_cqr", "overlay_mean_p50_r50_cap50", "overlay_mean_p50_r50_cap50_peak_hours"} <= validation_variants
     assert validation_variants == test_variants
-    assert {"q99_exceedance_rate", "q99_excess_mean", "active_day_share", "uplift"} <= set(
+    assert {"q99_exceedance_rate", "q99_excess_mean", "active_day_share", "active_hour_share", "uplift"} <= set(
         result.validation_summary.columns
     )
 

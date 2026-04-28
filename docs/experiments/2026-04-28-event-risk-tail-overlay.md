@@ -160,3 +160,57 @@ because this overlay is day-level. That is acceptable for the current canonical
 candidate because the all-hour width ratio is `1.085`, P50 is unchanged, and the
 tail benefit is large, but the next tail iteration should try a narrower
 hour-level event gate before increasing uplift further.
+
+## Active-Hour Follow-Up
+
+The audit report recommended adding a `peak_hours_only` conservative variant.
+This follow-up keeps the same day-level risk trigger and uplift rule, but applies
+the q99/q995 uplift only to fixed stress hours:
+
+```text
+peak_hours = [7, 16, 17, 18, 19, 20, 21]
+```
+
+Focused outputs:
+
+- `active_hour_validation_summary.csv`
+- `active_hour_test_summary.csv`
+- `active_hour_width_by_regime.csv`
+- `active_hour_day_diagnostics.csv`
+- `active_hour_pinball_by_quantile.csv`
+- `active_hour_conservative_variant_grid.csv`
+
+Test comparison:
+
+| Variant | Pinball | q99 Exceed | q99 Excess | Worst q99 Under | width98 | Active Hour Share |
+|---|---:|---:|---:|---:|---:|---:|
+| hourly CQR baseline | 3.2922 | 2.23% | 0.8696 | 329.19 | 69.15 | 0.0% |
+| all-hours event overlay | 3.2483 | 1.61% | 0.4707 | 279.19 | 75.05 | 11.81% |
+| peak-hours event overlay | 3.2603 | 1.91% | 0.6106 | 279.19 | 70.87 | 3.45% |
+
+Width cost by regime for the peak-hours variant:
+
+| Regime | width98 Ratio | q99 Excess Before | q99 Excess After |
+|---|---:|---:|---:|
+| all | 1.025 | 0.8696 | 0.6106 |
+| normal | 1.007 | 0.0313 | 0.0313 |
+| extreme | 1.104 | 16.2061 | 11.0336 |
+| daily max | 1.057 | 5.3088 | 3.7861 |
+| active-day normal | 1.089 | 0.0000 | 0.0000 |
+
+Interpretation:
+
+- Peak-hours gating passes the strict normal-hour width gate comfortably
+  (`1.007` vs `<= 1.05`).
+- It cuts all-hour width cost from `+8.5%` to `+2.5%`.
+- It still improves pinball and q99 excess versus hourly CQR.
+- It gives back part of the all-hours overlay benefit, especially q99 excess
+  (`0.6106` vs `0.4707`).
+
+Decision: do not replace the current all-hours canonical candidate yet. Keep
+`peak_hours` as the conservative width-first fallback. If the promotion gate is
+interpreted strictly on normal-hour width, `peak_hours` is the safer candidate;
+if quality is prioritized with a small normal-width exception, all-hours remains
+the better candidate. The next useful refinement is an hour-level risk gate that
+uses prediction-time context, not a fixed peak-hour list, to recover more q99
+benefit while preserving the lower width cost.
