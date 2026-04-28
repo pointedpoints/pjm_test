@@ -100,6 +100,15 @@ class ArtifactStore:
     def scenario_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_scenario_diagnostics.csv"
 
+    def event_risk_audit_dir(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_event_risk_tail_overlay"
+
+    def quality_gate_summary(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_quality_gate_summary.csv"
+
+    def run_manifest(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_run_manifest.json"
+
     def dm(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_dm.csv"
 

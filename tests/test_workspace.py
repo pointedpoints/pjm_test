@@ -112,6 +112,15 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.scenario_diagnostics("test") == (
         tmp_path / "run" / "artifacts" / "metrics" / "test_scenario_diagnostics.csv"
     ).resolve()
+    assert workspace.artifacts.event_risk_audit_dir("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_event_risk_tail_overlay"
+    ).resolve()
+    assert workspace.artifacts.quality_gate_summary("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_quality_gate_summary.csv"
+    ).resolve()
+    assert workspace.artifacts.run_manifest("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_run_manifest.json"
+    ).resolve()
     assert workspace.artifacts.snapshot_manifest("nbeatsx_snapshot") == (
         tmp_path / "run" / "artifacts" / "models" / "nbeatsx_snapshot" / "manifest.json"
     ).resolve()
