@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
@@ -13,13 +14,14 @@ import pandas as pd
 from .backtest import get_daily_split_days, run_rolling_backtest
 from .config import ProjectConfig, load_config
 from .data import prepare_dataset
-from .evaluation import compute_metrics
+from .evaluation import build_event_risk_tail_overlay_audit_artifacts, compute_metrics
 from .evaluation.evaluator import Evaluator
 from .model_io import load_model_snapshot, save_model_snapshot_bundle, validate_model_prediction_output
 from .models import build_model as build_forecast_model
 from .models.base import ForecastModel
 from .paths import ensure_project_directories
 from .prepared_data import FeatureSchema, PreparedDataset
+from .quality_flow import write_json
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
 SplitName = Literal["validation", "test"]
@@ -524,6 +526,70 @@ class Workspace:
 
     def export_report(self, split: SplitName = "test") -> list[Path]:
         return self.artifacts.export_report_bundle(split)
+
+    def audit_event_risk_overlay(self, split: SplitName = "test") -> Path:
+        postprocess_cfg = self.config.report.get("quantile_postprocess", {})
+        if not isinstance(postprocess_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess must be a mapping for event-risk audit.")
+        event_cfg = postprocess_cfg.get("event_risk_tail_overlay", {})
+        if not isinstance(event_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess.event_risk_tail_overlay must be a mapping.")
+        if not event_cfg or not bool(event_cfg.get("enabled", False)):
+            raise ValueError("report.quantile_postprocess.event_risk_tail_overlay must be enabled.")
+
+        calibration_cfg = postprocess_cfg.get("calibration")
+        if calibration_cfg is None:
+            calibration_cfg = {}
+        elif not isinstance(calibration_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess.calibration must be a mapping for event-risk audit.")
+        source_split = str(event_cfg.get("source_split", "validation"))
+        if source_split != "validation":
+            raise ValueError("event-risk audit must use validation source_split.")
+        model_name = str(event_cfg.get("model_name", self.config.backtest["benchmark_models"][0]))
+        seed = int(event_cfg.get("seed", self.config.project["benchmark_seed"]))
+        risk_score_column = str(event_cfg.get("risk_score_column", "spike_score"))
+
+        source_frame = pd.read_parquet(self.artifacts.prediction(model_name, source_split, seed))
+        target_frame = pd.read_parquet(self.artifacts.prediction(model_name, split, seed))
+        audit = build_event_risk_tail_overlay_audit_artifacts(
+            source_frame,
+            test_frame=target_frame if split != source_split else None,
+            validation_holdout_days=int(event_cfg.get("validation_holdout_days", 91)),
+            risk_score_column=risk_score_column,
+            risk_threshold_quantile=float(event_cfg.get("risk_threshold_quantile", 0.90)),
+            risk_aggregation=str(event_cfg.get("risk_aggregation", "mean")),
+            residual_quantile=float(event_cfg.get("residual_quantile", 1.0)),
+            max_uplift=float(event_cfg.get("max_uplift", 50.0)),
+            target_quantiles=event_cfg.get("target_quantiles", [0.99, 0.995]),
+            calibration_method=str(calibration_cfg.get("method", "cqr_asymmetric")),
+            calibration_group_by=calibration_cfg.get("group_by", "hour"),
+            calibration_min_group_size=int(calibration_cfg.get("min_group_size", 24)),
+            interval_coverage_floors=calibration_cfg.get("interval_coverage_floors"),
+            regime_threshold=float(calibration_cfg.get("regime_threshold", 0.50)),
+            risk_score_input_columns=self._spike_score_input_columns(risk_score_column),
+            active_hour_set=str(event_cfg.get("active_hour_set", "all")),
+            conservative_active_hour_sets=event_cfg.get("conservative_active_hour_sets", ("all", "peak_hours")),
+        )
+
+        output_dir = self.artifacts.event_risk_audit_dir(split)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(output_dir / "overlay_implementation_audit.json", audit.implementation_audit)
+        write_json(output_dir / "spike_score_audit.json", audit.spike_score_audit)
+        audit.active_day_diagnostics.to_csv(output_dir / "active_day_diagnostics.csv", index=False)
+        audit.active_days_by_month.to_csv(output_dir / "active_days_by_month.csv", index=False)
+        audit.width_by_regime.to_csv(output_dir / "width_by_regime.csv", index=False)
+        audit.pinball_by_quantile.to_csv(output_dir / "pinball_by_quantile.csv", index=False)
+        audit.conservative_variant_grid.to_csv(output_dir / "conservative_variant_grid.csv", index=False)
+        audit.daily_max_gap_detail.to_csv(output_dir / "daily_max_gap_detail.csv", index=False)
+        audit.event_day_before_after.to_csv(output_dir / "event_day_before_after.csv", index=False)
+        return output_dir
+
+    def _spike_score_input_columns(self, risk_score_column: str) -> list[str]:
+        for feature in self.config.raw.get("features", {}).get("derived_features", []) or []:
+            if feature.get("kind") != "spike_score" or feature.get("name") != risk_score_column:
+                continue
+            return [str(item.get("source")) for item in feature.get("inputs", []) if item.get("source")]
+        return []
 
     def export_model_snapshot(self, model_name: str = "nbeatsx", snapshot_name: str | None = None) -> Path:
         window_days = self.config.backtest["rolling_window_days"]

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import yaml
 
 from pjm_forecast.data.ingress import PreparedDataResult
@@ -94,6 +95,28 @@ def _write_temp_config(tmp_path: Path, csv_path: Path, *, with_weather: bool = F
     return config_path
 
 
+def _quantile_prediction_frame(split: str) -> pd.DataFrame:
+    rows = []
+    for day, spike_score in [("2026-01-01", 0.2), ("2026-01-02", 0.95)]:
+        for hour in [0, 19]:
+            ds = pd.Timestamp(day) + pd.Timedelta(hours=hour)
+            for quantile, y_pred in [(0.5, 95.0), (0.95, 100.0), (0.99, 105.0), (0.995, 110.0)]:
+                rows.append(
+                    {
+                        "ds": ds,
+                        "y": 120.0 if spike_score > 0.9 else 100.0,
+                        "y_pred": y_pred,
+                        "quantile": quantile,
+                        "model": "nhits_tail_grid_weighted_main",
+                        "split": split,
+                        "seed": 7,
+                        "metadata": "{}",
+                        "spike_score": spike_score,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path)
@@ -124,6 +147,97 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.snapshot_manifest("nbeatsx_snapshot") == (
         tmp_path / "run" / "artifacts" / "models" / "nbeatsx_snapshot" / "manifest.json"
     ).resolve()
+
+
+def test_workspace_audit_event_risk_overlay_writes_expected_files(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["backtest"]["benchmark_models"] = ["nhits_tail_grid_weighted_main"]
+    workspace.config.raw["models"]["nhits_tail_grid_weighted_main"] = {"type": "nhits"}
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "monotonic": True,
+        "calibration": {
+            "enabled": True,
+            "source_split": "validation",
+            "method": "cqr_asymmetric",
+            "group_by": "hour",
+            "min_group_size": 1,
+        },
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "validation",
+            "risk_score_column": "spike_score",
+            "risk_aggregation": "mean",
+            "risk_threshold_quantile": 0.50,
+            "residual_quantile": 1.0,
+            "max_uplift": 25.0,
+            "target_quantiles": [0.99, 0.995],
+            "validation_holdout_days": 1,
+        },
+    }
+
+    for split in ["validation", "test"]:
+        path = workspace.artifacts.prediction("nhits_tail_grid_weighted_main", split, 7)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _quantile_prediction_frame(split).to_parquet(path, index=False)
+
+    output_dir = workspace.audit_event_risk_overlay("test")
+
+    assert (output_dir / "overlay_implementation_audit.json").exists()
+    assert (output_dir / "spike_score_audit.json").exists()
+    assert (output_dir / "width_by_regime.csv").exists()
+
+
+def test_workspace_audit_event_risk_overlay_rejects_non_validation_source_split(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "test",
+        },
+    }
+
+    with pytest.raises(ValueError, match="event-risk audit must use validation source_split"):
+        workspace.audit_event_risk_overlay("test")
+
+
+@pytest.mark.parametrize(
+    "postprocess_config",
+    [
+        ["not-a-mapping"],
+        {"event_risk_tail_overlay": ["not-a-mapping"]},
+    ],
+)
+def test_workspace_audit_event_risk_overlay_rejects_malformed_event_config(
+    tmp_path: Path,
+    postprocess_config: object,
+) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = postprocess_config
+
+    with pytest.raises(ValueError, match="report.quantile_postprocess"):
+        workspace.audit_event_risk_overlay("test")
+
+
+def test_workspace_audit_event_risk_overlay_rejects_malformed_calibration_config(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "calibration": [],
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "validation",
+        },
+    }
+
+    with pytest.raises(ValueError, match="report.quantile_postprocess.calibration"):
+        workspace.audit_event_risk_overlay("test")
 
 
 def test_pipeline_stage_order_excludes_retrieval() -> None:
