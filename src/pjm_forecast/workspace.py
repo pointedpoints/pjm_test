@@ -21,7 +21,7 @@ from .models import build_model as build_forecast_model
 from .models.base import ForecastModel
 from .paths import ensure_project_directories
 from .prepared_data import FeatureSchema, PreparedDataset
-from .quality_flow import write_json
+from .quality_flow import build_quality_gate_summary, build_run_manifest, write_json
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
 SplitName = Literal["validation", "test"]
@@ -526,6 +526,54 @@ class Workspace:
 
     def export_report(self, split: SplitName = "test") -> list[Path]:
         return self.artifacts.export_report_bundle(split)
+
+    def finalize_quality_flow(self, split: SplitName = "test") -> list[Path]:
+        model_name = str(self.config.backtest["benchmark_models"][0])
+        seed = int(self.config.project["benchmark_seed"])
+        metrics_path = self.artifacts.metrics(split)
+        quantile_diagnostics_path = self.artifacts.quantile_diagnostics(split)
+        regime_metrics_path = self.artifacts.regime_metrics(split)
+        spike_score_diagnostics_path = self.artifacts.spike_score_diagnostics(split)
+        scenario_diagnostics_path = self.artifacts.scenario_diagnostics(split)
+        event_audit_dir = self.artifacts.event_risk_audit_dir(split)
+        overlay_implementation_audit_path = event_audit_dir / "overlay_implementation_audit.json"
+        spike_score_audit_path = event_audit_dir / "spike_score_audit.json"
+        width_by_regime_path = event_audit_dir / "width_by_regime.csv"
+        dm_path = self.artifacts.dm(split)
+        quality_path = self.artifacts.quality_gate_summary(split)
+        manifest_path = self.artifacts.run_manifest(split)
+        artifact_paths = [
+            metrics_path,
+            quantile_diagnostics_path,
+            overlay_implementation_audit_path,
+            spike_score_audit_path,
+            width_by_regime_path,
+            regime_metrics_path,
+            spike_score_diagnostics_path,
+            scenario_diagnostics_path,
+            dm_path,
+            quality_path,
+        ]
+
+        try:
+            summary = build_quality_gate_summary(
+                split=split,
+                metrics_path=metrics_path,
+                quantile_diagnostics_path=quantile_diagnostics_path,
+                event_audit_dir=event_audit_dir,
+            )
+            quality_path.parent.mkdir(parents=True, exist_ok=True)
+            summary.to_csv(quality_path, index=False)
+        finally:
+            manifest = build_run_manifest(
+                split=split,
+                config_path=self.config.path,
+                model_name=model_name,
+                seed=seed,
+                artifact_paths=artifact_paths,
+            )
+            write_json(manifest_path, manifest)
+        return [quality_path, manifest_path]
 
     def audit_event_risk_overlay(self, split: SplitName = "test") -> Path:
         postprocess_cfg = self.config.report.get("quantile_postprocess", {})

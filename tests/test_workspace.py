@@ -189,6 +189,93 @@ def test_workspace_audit_event_risk_overlay_writes_expected_files(tmp_path: Path
     assert (output_dir / "width_by_regime.csv").exists()
 
 
+def test_workspace_finalize_quality_flow_writes_summary_and_manifest(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+
+    workspace.artifacts.metrics("test").parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "model": "seasonal_naive",
+                "seed": 7,
+                "mae": 18.5,
+                "pinball": 2.25,
+            }
+        ]
+    ).to_csv(workspace.artifacts.metrics("test"), index=False)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "post_crossing_rate": 0.0,
+                "post_q99_exceedance_rate": 0.025,
+                "post_q99_excess_mean": 1.5,
+                "post_worst_q99_underprediction": 12.0,
+                "post_width_98": 105.2,
+            }
+        ]
+    ).to_csv(workspace.artifacts.quantile_diagnostics("test"), index=False)
+    event_audit_dir = workspace.artifacts.event_risk_audit_dir("test")
+    event_audit_dir.mkdir(parents=True, exist_ok=True)
+    (event_audit_dir / "overlay_implementation_audit.json").write_text(
+        json.dumps({"selected_variant": "hour_cqr"}),
+        encoding="utf-8",
+    )
+    (event_audit_dir / "spike_score_audit.json").write_text(
+        json.dumps({"availability_status": "PASS"}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {"regime": "all", "before_width_98": 100.0, "after_width_98": 105.2},
+            {"regime": "normal", "before_width_98": 100.0, "after_width_98": 105.2},
+        ]
+    ).to_csv(event_audit_dir / "width_by_regime.csv", index=False)
+
+    written = workspace.finalize_quality_flow("test")
+
+    assert written == [
+        workspace.artifacts.quality_gate_summary("test"),
+        workspace.artifacts.run_manifest("test"),
+    ]
+    assert workspace.artifacts.quality_gate_summary("test").exists()
+    assert workspace.artifacts.run_manifest("test").exists()
+    manifest = json.loads(workspace.artifacts.run_manifest("test").read_text(encoding="utf-8"))
+    artifact_paths = [item["path"] for item in manifest["artifacts"]]
+    assert str(event_audit_dir / "overlay_implementation_audit.json") in artifact_paths
+    assert str(event_audit_dir / "spike_score_audit.json") in artifact_paths
+    assert str(event_audit_dir / "width_by_regime.csv") in artifact_paths
+
+
+def test_workspace_finalize_quality_flow_writes_manifest_when_required_artifact_is_missing(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+
+    workspace.artifacts.metrics("test").parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "post_crossing_rate": 0.0,
+                "post_q99_exceedance_rate": 0.025,
+            }
+        ]
+    ).to_csv(workspace.artifacts.quantile_diagnostics("test"), index=False)
+
+    with pytest.raises(FileNotFoundError):
+        workspace.finalize_quality_flow("test")
+
+    assert workspace.artifacts.run_manifest("test").exists()
+    manifest = json.loads(workspace.artifacts.run_manifest("test").read_text(encoding="utf-8"))
+    artifacts = {item["path"]: item for item in manifest["artifacts"]}
+    assert artifacts[str(workspace.artifacts.metrics("test"))]["exists"] is False
+    assert artifacts[str(workspace.artifacts.quality_gate_summary("test"))]["exists"] is False
+
+
 def test_workspace_audit_event_risk_overlay_rejects_non_validation_source_split(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path)
