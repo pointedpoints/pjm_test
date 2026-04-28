@@ -211,6 +211,15 @@ report:
         "0.10-0.90": 0.76
         "0.05-0.95": 0.86
         "0.01-0.99": 0.95
+    event_risk_tail_overlay:
+      enabled: true
+      source_split: "validation"
+      risk_score_column: "spike_score"
+      risk_aggregation: "mean"
+      risk_threshold_quantile: 0.90
+      residual_quantile: 1.00
+      max_uplift: 50.0
+      target_quantiles: [0.99, 0.995]
   scenario_evaluation:
     enabled: true
     source_split: "validation"

@@ -44,6 +44,13 @@ def _prediction_context_columns(config: ProjectConfig, future_df: pd.DataFrame) 
             raise ValueError(f"prediction context requires future feature column {regime_column!r}.")
         if regime_column not in columns:
             columns.append(regime_column)
+    event_tail_cfg = postprocess_cfg.get("event_risk_tail_overlay", {})
+    if isinstance(event_tail_cfg, dict) and bool(event_tail_cfg.get("enabled", False)):
+        risk_column = str(event_tail_cfg.get("risk_score_column", "spike_score"))
+        if risk_column not in future_df.columns:
+            raise ValueError(f"event_risk_tail_overlay requires future feature column {risk_column!r}.")
+        if risk_column not in columns:
+            columns.append(risk_column)
     return columns
 
 

@@ -7,6 +7,7 @@ from typing import Protocol
 import pandas as pd
 
 from .dm import dm_test
+from .event_risk_tail_overlay import apply_event_risk_tail_overlay, fit_event_risk_tail_overlay
 from .metrics import compute_metrics, compute_quantile_diagnostics
 from .regime_metrics import compute_regime_metrics
 from .reporting import plot_high_volatility_week, plot_hourly_mae
@@ -64,6 +65,12 @@ class _ArtifactStoreLike(Protocol):
     def write_plot(self, split: str, kind: str, plot_writer) -> Path: ...
 
 
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
 class Evaluator:
     def __init__(self, schema, artifacts: _ArtifactStoreLike) -> None:
         self.schema = schema
@@ -118,7 +125,10 @@ class Evaluator:
         median_bias_max_abs_adjustment = median_bias_cfg.get("max_abs_adjustment")
         if median_bias_max_abs_adjustment is not None:
             median_bias_max_abs_adjustment = float(median_bias_max_abs_adjustment)
+        event_tail_cfg = postprocess_cfg.get("event_risk_tail_overlay", {})
+        event_tail_enabled = bool(event_tail_cfg.get("enabled", False))
         calibration_frame: pd.DataFrame | None = None
+        event_calibration_frame: pd.DataFrame | None = None
         if run.split == "test" and (bool(calibration_cfg.get("enabled", False)) or median_bias_enabled):
             source_split = str(median_bias_cfg.get("source_split", calibration_cfg.get("source_split", "validation")))
             calibration_frame = self._load_matching_run_frame(
@@ -132,7 +142,20 @@ class Evaluator:
                     f"Calibration frame quantile grid does not match run {run.name!r}. "
                     f"target={quantile_values(frame)}, calibration={quantile_values(calibration_frame)}"
                 )
-        return postprocess_quantile_predictions(
+        if run.split == "test" and event_tail_enabled:
+            event_source_split = str(event_tail_cfg.get("source_split", "validation"))
+            event_calibration_frame = self._load_matching_run_frame(
+                split=event_source_split,
+                model=run.model,
+                seed=run.seed,
+                variant=run.variant,
+            )
+            if event_calibration_frame is not None and quantile_values(frame) != quantile_values(event_calibration_frame):
+                raise ValueError(
+                    f"Event-risk overlay frame quantile grid does not match run {run.name!r}. "
+                    f"target={quantile_values(frame)}, calibration={quantile_values(event_calibration_frame)}"
+                )
+        processed = postprocess_quantile_predictions(
             frame,
             monotonic=monotonic,
             calibration_frame=calibration_frame,
@@ -149,6 +172,25 @@ class Evaluator:
             median_bias_regime_threshold=median_bias_regime_threshold,
             median_bias_max_abs_adjustment=median_bias_max_abs_adjustment,
         )
+        event_risk_score_column = str(event_tail_cfg.get("risk_score_column", calibration_regime_score_column))
+        if (
+            run.split == "test"
+            and event_tail_enabled
+            and event_calibration_frame is not None
+            and event_risk_score_column in processed.columns
+            and event_risk_score_column in event_calibration_frame.columns
+        ):
+            overlay = fit_event_risk_tail_overlay(
+                event_calibration_frame,
+                risk_score_column=event_risk_score_column,
+                risk_threshold_quantile=float(event_tail_cfg.get("risk_threshold_quantile", 0.90)),
+                risk_aggregation=str(event_tail_cfg.get("risk_aggregation", "mean")),
+                residual_quantile=float(event_tail_cfg.get("residual_quantile", 1.0)),
+                max_uplift=_optional_float(event_tail_cfg.get("max_uplift")),
+                target_quantiles=event_tail_cfg.get("target_quantiles", [0.99, 0.995]),
+            )
+            processed = apply_event_risk_tail_overlay(processed, overlay)
+        return processed
 
     def _load_matching_run_frame(
         self,

@@ -73,23 +73,25 @@ def _quantile_frame(
     quantiles: list[float],
     y_true: list[float],
     predicted_by_quantile: dict[float, list[float]],
+    spike_scores: list[float] | None = None,
 ) -> pd.DataFrame:
     ds = pd.date_range("2026-01-01 00:00:00", periods=len(y_true), freq="h")
     rows = []
     for index, ts in enumerate(ds):
         for quantile in quantiles:
-            rows.append(
-                {
-                    "ds": ts,
-                    "y": y_true[index],
-                    "y_pred": predicted_by_quantile[quantile][index],
-                    "model": "quantile_dummy",
-                    "split": split,
-                    "seed": 7,
-                    "quantile": quantile,
-                    "metadata": "{}",
-                }
-            )
+            row = {
+                "ds": ts,
+                "y": y_true[index],
+                "y_pred": predicted_by_quantile[quantile][index],
+                "model": "quantile_dummy",
+                "split": split,
+                "seed": 7,
+                "quantile": quantile,
+                "metadata": "{}",
+            }
+            if spike_scores is not None:
+                row["spike_score"] = spike_scores[index]
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -253,3 +255,74 @@ def test_evaluator_rejects_mismatched_calibration_quantile_grid(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="Calibration frame quantile grid does not match run"):
         evaluator.load_runs("test")
+
+
+def test_evaluator_applies_event_risk_tail_overlay_from_validation_source(tmp_path: Path) -> None:
+    config = load_config(Path("configs/pjm_day_ahead_v1.yaml"))
+    config.raw["report"]["quantile_postprocess"] = {
+        "monotonic": True,
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "validation",
+            "risk_score_column": "spike_score",
+            "risk_aggregation": "mean",
+            "risk_threshold_quantile": 0.50,
+            "residual_quantile": 1.0,
+            "max_uplift": 25.0,
+            "target_quantiles": [0.99, 0.995],
+        },
+    }
+    config.raw["models"]["quantile_dummy"] = {
+        "loss_name": "mqloss",
+        "quantiles": [0.5, 0.99, 0.995],
+    }
+    schema = FeatureSchema(config)
+
+    validation_frame = _quantile_frame(
+        split="validation",
+        quantiles=[0.5, 0.99, 0.995],
+        y_true=[100.0, 180.0],
+        predicted_by_quantile={
+            0.5: [90.0, 90.0],
+            0.99: [100.0, 100.0],
+            0.995: [105.0, 105.0],
+        },
+        spike_scores=[0.20, 0.90],
+    )
+    test_frame = _quantile_frame(
+        split="test",
+        quantiles=[0.5, 0.99, 0.995],
+        y_true=[100.0, 999.0],
+        predicted_by_quantile={
+            0.5: [90.0, 90.0],
+            0.99: [100.0, 100.0],
+            0.995: [105.0, 105.0],
+        },
+        spike_scores=[0.20, 0.95],
+    )
+    validation_frame.loc[validation_frame["ds"] == pd.Timestamp("2026-01-01 01:00:00"), "ds"] = pd.Timestamp(
+        "2026-01-02 00:00:00"
+    )
+    test_frame.loc[test_frame["ds"] == pd.Timestamp("2026-01-01 01:00:00"), "ds"] = pd.Timestamp(
+        "2026-01-02 00:00:00"
+    )
+    validation_path = tmp_path / "quantile_dummy_validation.parquet"
+    test_path = tmp_path / "quantile_dummy_test.parquet"
+    validation_frame.to_parquet(validation_path, index=False)
+    test_frame.to_parquet(test_path, index=False)
+
+    artifacts = _Artifacts(
+        tmp_path,
+        {
+            "validation": [_Run("quantile_dummy_validation_seed7", validation_path, "quantile_dummy", "validation", 7)],
+            "test": [_Run("quantile_dummy_test_seed7", test_path, "quantile_dummy", "test", 7)],
+        },
+    )
+    evaluator = Evaluator(schema=schema, artifacts=artifacts)
+
+    bundle = evaluator.load_runs("test")
+    grid = bundle.runs[0].frame.pivot(index="ds", columns="quantile", values="y_pred")
+
+    assert grid.loc[pd.Timestamp("2026-01-01 00:00:00"), 0.99] == pytest.approx(100.0)
+    assert grid.loc[pd.Timestamp("2026-01-02 00:00:00"), 0.99] == pytest.approx(125.0)
+    assert grid.loc[pd.Timestamp("2026-01-02 00:00:00"), 0.995] == pytest.approx(130.0)

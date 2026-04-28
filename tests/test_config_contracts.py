@@ -88,6 +88,15 @@ def test_current_processed_config_uses_nhits_tail_grid_contract() -> None:
     assert postprocess_cfg["calibration"]["regime_threshold"] == 0.50
     assert postprocess_cfg["calibration"]["min_group_size"] == 24
     assert postprocess_cfg["calibration"]["interval_coverage_floors"]["0.01-0.99"] == 0.95
+    event_tail_cfg = postprocess_cfg["event_risk_tail_overlay"]
+    assert event_tail_cfg["enabled"] is True
+    assert event_tail_cfg["source_split"] == "validation"
+    assert event_tail_cfg["risk_score_column"] == "spike_score"
+    assert event_tail_cfg["risk_aggregation"] == "mean"
+    assert event_tail_cfg["risk_threshold_quantile"] == 0.90
+    assert event_tail_cfg["residual_quantile"] == 1.00
+    assert event_tail_cfg["max_uplift"] == 50.0
+    assert event_tail_cfg["target_quantiles"] == [0.99, 0.995]
     scenario_cfg = config.report["scenario_evaluation"]
     assert scenario_cfg["enabled"] is True
     assert scenario_cfg["copula_family"] == "student_t"

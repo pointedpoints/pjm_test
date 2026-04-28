@@ -1,5 +1,12 @@
 from .dm import dm_test
 from .evaluator import EvaluationBundle, Evaluator, LoadedPredictionRun
+from .event_risk_tail_overlay import (
+    EventRiskTailOverlay,
+    EventRiskTailOverlayGridResult,
+    apply_event_risk_tail_overlay,
+    evaluate_event_risk_tail_overlay_grid,
+    fit_event_risk_tail_overlay,
+)
 from .hour_x_regime_grid import HourXRegimeGridResult, evaluate_hour_x_regime_threshold_grid
 from .median_bias_grid import MedianBiasGridResult, evaluate_median_bias_grid
 from .metrics import compute_hourly_mae, compute_metrics, compute_quantile_diagnostics
@@ -11,6 +18,8 @@ from .tail_tradeoff import compute_width_adjusted_tail_tradeoff
 
 __all__ = [
     "EvaluationBundle",
+    "EventRiskTailOverlay",
+    "EventRiskTailOverlayGridResult",
     "HourXRegimeGridResult",
     "MedianBiasGridResult",
     "Evaluator",
@@ -18,6 +27,7 @@ __all__ = [
     "QualityDecision",
     "QualityGateResult",
     "QualityMetrics",
+    "apply_event_risk_tail_overlay",
     "compute_hourly_mae",
     "compute_metrics",
     "compute_quantile_diagnostics",
@@ -26,7 +36,9 @@ __all__ = [
     "compute_spike_score_diagnostics",
     "compute_width_adjusted_tail_tradeoff",
     "dm_test",
+    "evaluate_event_risk_tail_overlay_grid",
     "evaluate_hour_x_regime_threshold_grid",
     "evaluate_median_bias_grid",
     "evaluate_quality_gate",
+    "fit_event_risk_tail_overlay",
 ]
