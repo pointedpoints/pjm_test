@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
-from pjm_forecast.evaluation.event_risk_tail_overlay import evaluate_event_risk_tail_overlay_grid
+from pjm_forecast.evaluation.event_risk_tail_overlay import (
+    build_event_risk_tail_overlay_audit_artifacts,
+    evaluate_event_risk_tail_overlay_grid,
+)
 
 
 def _load_prediction(path: Path, *, risk_score_column: str) -> pd.DataFrame:
@@ -55,8 +60,24 @@ def _parse_interval_coverage_floors(values: list[str] | None) -> dict[str, float
     return floors
 
 
+def _spike_score_input_columns(config_path: str | None, risk_score_column: str) -> list[str]:
+    if not config_path:
+        return []
+    config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    for feature in config.get("features", {}).get("derived_features", []) or []:
+        if feature.get("kind") != "spike_score" or feature.get("name") != risk_score_column:
+            continue
+        return [str(item.get("source")) for item in feature.get("inputs", []) if item.get("source")]
+    return []
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate event-risk tail overlay on existing quantile predictions.")
+    parser.add_argument("--config", help="Optional pipeline config used to audit spike_score input columns.")
     parser.add_argument("--validation-prediction", required=True, help="Validation prediction parquet path.")
     parser.add_argument("--test-prediction", help="Optional test prediction parquet path.")
     parser.add_argument("--output-dir", required=True, help="Directory for output CSV files.")
@@ -69,6 +90,10 @@ def main() -> None:
     parser.add_argument("--validation-holdout-days", type=int, default=91)
     parser.add_argument("--calibration-min-group-size", type=int, default=24)
     parser.add_argument("--regime-threshold", type=float, default=0.50)
+    parser.add_argument("--selected-risk-aggregation", default="mean")
+    parser.add_argument("--selected-risk-threshold-quantile", type=float, default=0.90)
+    parser.add_argument("--selected-residual-quantile", type=float, default=1.00)
+    parser.add_argument("--selected-max-uplift", type=float, default=50.0)
     parser.add_argument(
         "--interval-coverage-floor",
         nargs="*",
@@ -102,6 +127,31 @@ def main() -> None:
     result.validation_summary.to_csv(output_dir / "validation_holdout_summary.csv", index=False)
     if not result.test_summary.empty:
         result.test_summary.to_csv(output_dir / "test_summary.csv", index=False)
+
+    audit = build_event_risk_tail_overlay_audit_artifacts(
+        validation_prediction,
+        test_frame=test_prediction,
+        validation_holdout_days=int(args.validation_holdout_days),
+        risk_score_column=risk_score_column,
+        risk_aggregation=str(args.selected_risk_aggregation),
+        risk_threshold_quantile=float(args.selected_risk_threshold_quantile),
+        residual_quantile=float(args.selected_residual_quantile),
+        max_uplift=float(args.selected_max_uplift),
+        target_quantiles=_parse_floats(list(args.target_quantiles)),
+        calibration_min_group_size=int(args.calibration_min_group_size),
+        interval_coverage_floors=_parse_interval_coverage_floors(args.interval_coverage_floor),
+        regime_threshold=float(args.regime_threshold),
+        risk_score_input_columns=_spike_score_input_columns(args.config, risk_score_column),
+    )
+    _write_json(output_dir / "overlay_implementation_audit.json", audit.implementation_audit)
+    _write_json(output_dir / "spike_score_audit.json", audit.spike_score_audit)
+    audit.active_day_diagnostics.to_csv(output_dir / "active_day_diagnostics.csv", index=False)
+    audit.active_days_by_month.to_csv(output_dir / "active_days_by_month.csv", index=False)
+    audit.width_by_regime.to_csv(output_dir / "width_by_regime.csv", index=False)
+    audit.pinball_by_quantile.to_csv(output_dir / "pinball_by_quantile.csv", index=False)
+    audit.conservative_variant_grid.to_csv(output_dir / "conservative_variant_grid.csv", index=False)
+    audit.daily_max_gap_detail.to_csv(output_dir / "daily_max_gap_detail.csv", index=False)
+    audit.event_day_before_after.to_csv(output_dir / "event_day_before_after.csv", index=False)
 
 
 if __name__ == "__main__":

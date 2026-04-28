@@ -29,6 +29,19 @@ class EventRiskTailOverlayGridResult:
     test_summary: pd.DataFrame
 
 
+@dataclass(frozen=True)
+class EventRiskTailOverlayAuditArtifacts:
+    implementation_audit: dict[str, object]
+    spike_score_audit: dict[str, object]
+    active_day_diagnostics: pd.DataFrame
+    active_days_by_month: pd.DataFrame
+    width_by_regime: pd.DataFrame
+    pinball_by_quantile: pd.DataFrame
+    conservative_variant_grid: pd.DataFrame
+    daily_max_gap_detail: pd.DataFrame
+    event_day_before_after: pd.DataFrame
+
+
 def evaluate_event_risk_tail_overlay_grid(
     validation_frame: pd.DataFrame,
     *,
@@ -85,6 +98,150 @@ def evaluate_event_risk_tail_overlay_grid(
             regime_threshold=regime_threshold,
         )
     return EventRiskTailOverlayGridResult(validation_summary=validation_summary, test_summary=test_summary)
+
+
+def build_event_risk_tail_overlay_audit_artifacts(
+    validation_frame: pd.DataFrame,
+    *,
+    test_frame: pd.DataFrame | None = None,
+    validation_holdout_days: int = 91,
+    risk_score_column: str = "spike_score",
+    risk_threshold_quantile: float = 0.90,
+    risk_aggregation: str = "mean",
+    residual_quantile: float = 1.0,
+    max_uplift: float = 50.0,
+    target_quantiles: Iterable[float] = (0.99, 0.995),
+    calibration_method: str = "cqr_asymmetric",
+    calibration_group_by: str | None = "hour",
+    calibration_min_group_size: int = 24,
+    interval_coverage_floors: dict[str, float] | None = None,
+    regime_threshold: float = 0.50,
+    risk_score_input_columns: Iterable[str] | None = None,
+) -> EventRiskTailOverlayAuditArtifacts:
+    validation_calibration, validation_eval = split_validation_holdout(
+        validation_frame,
+        holdout_days=validation_holdout_days,
+    )
+    validation_before, validation_after, validation_overlay = _before_after_frames(
+        eval_frame=validation_eval,
+        calibration_frame=validation_calibration,
+        risk_score_column=risk_score_column,
+        risk_threshold_quantile=risk_threshold_quantile,
+        risk_aggregation=risk_aggregation,
+        residual_quantile=residual_quantile,
+        max_uplift=max_uplift,
+        target_quantiles=target_quantiles,
+        calibration_method=calibration_method,
+        calibration_group_by=calibration_group_by,
+        calibration_min_group_size=calibration_min_group_size,
+        interval_coverage_floors=interval_coverage_floors,
+        regime_threshold=regime_threshold,
+    )
+    before_after: dict[str, tuple[pd.DataFrame, pd.DataFrame, EventRiskTailOverlay]] = {
+        "validation_holdout": (validation_before, validation_after, validation_overlay)
+    }
+    if test_frame is not None:
+        test_before, test_after, test_overlay = _before_after_frames(
+            eval_frame=test_frame,
+            calibration_frame=validation_frame,
+            risk_score_column=risk_score_column,
+            risk_threshold_quantile=risk_threshold_quantile,
+            risk_aggregation=risk_aggregation,
+            residual_quantile=residual_quantile,
+            max_uplift=max_uplift,
+            target_quantiles=target_quantiles,
+            calibration_method=calibration_method,
+            calibration_group_by=calibration_group_by,
+            calibration_min_group_size=calibration_min_group_size,
+            interval_coverage_floors=interval_coverage_floors,
+            regime_threshold=regime_threshold,
+        )
+        before_after["test"] = (test_before, test_after, test_overlay)
+
+    reference_before, reference_after, reference_overlay = before_after.get("test", before_after["validation_holdout"])
+    implementation_audit = {
+        "validation_holdout_days": int(validation_holdout_days),
+        "calibration_source": "validation_early_segment",
+        "selection_source": "validation_holdout",
+        "test_used_for_selection": False,
+        "residual_source": "raw_monotonic",
+        "overlay_application_order": "after_hourly_cqr",
+        "target_quantiles": list(reference_overlay.target_quantiles),
+        "q50_changed": _quantile_changed(reference_before, reference_after, 0.50),
+        "crossing_after_overlay": compute_quantile_diagnostics(reference_after)["crossing_rate"],
+        "selected_variant": _variant_name(risk_aggregation, risk_threshold_quantile, residual_quantile, max_uplift),
+    }
+    spike_score_audit = {
+        "risk_score_column": risk_score_column,
+        "input_columns": list(risk_score_input_columns or []),
+        "uses_y": False,
+        "uses_horizon_truth": False,
+        "uses_energy_truth": False,
+        "uses_congestion_loss_truth": False,
+        "uses_global_rank": False,
+        "uses_historical_percentile": True,
+        "fit_split": "validation",
+        "threshold_source": "validation",
+        "test_refit": False,
+        "availability_status": "PASS" if risk_score_column in validation_frame.columns else "FAIL",
+        "notes": "Risk threshold and uplift are fit from validation source only; test is apply-only.",
+    }
+
+    active_rows = []
+    active_month_rows = []
+    width_rows = []
+    pinball_rows = []
+    daily_rows = []
+    event_rows = []
+    for split_name, (before, after, overlay) in before_after.items():
+        active_rows.extend(_active_day_diagnostic_rows(split_name, before, after, overlay))
+        active_month_rows.extend(_active_days_by_month_rows(split_name, before, after, overlay))
+        width_rows.extend(_width_by_regime_rows(split_name, before, after, overlay))
+        pinball_rows.extend(_pinball_by_quantile_rows(split_name, before, after))
+        daily_rows.extend(_daily_max_gap_rows(split_name, before, after, overlay))
+        event_rows.extend(_event_day_rows(split_name, before, after, overlay))
+
+    conservative = pd.concat(
+        [
+            evaluate_event_risk_tail_overlay_variants(
+                eval_frame=validation_eval,
+                calibration_frame=validation_calibration,
+                mode="validation_holdout",
+                risk_score_column=risk_score_column,
+                risk_aggregations=[risk_aggregation],
+                risk_threshold_quantiles=[0.80, 0.90, 0.95],
+                residual_quantiles=[0.99, 1.0],
+                max_uplifts=[25.0, 50.0],
+                target_quantiles=target_quantiles,
+                calibration_method=calibration_method,
+                calibration_group_by=calibration_group_by,
+                calibration_min_group_size=calibration_min_group_size,
+                interval_coverage_floors=interval_coverage_floors,
+                regime_threshold=regime_threshold,
+            )
+        ],
+        ignore_index=True,
+    )
+    conservative["width98_ratio"] = conservative["width_98"] / float(
+        conservative.loc[conservative["variant"].eq("hour_cqr"), "width_98"].iloc[0]
+    )
+    conservative["decision"] = np.where(
+        conservative["variant"].eq(implementation_audit["selected_variant"]),
+        "selected",
+        "candidate",
+    )
+
+    return EventRiskTailOverlayAuditArtifacts(
+        implementation_audit=implementation_audit,
+        spike_score_audit=spike_score_audit,
+        active_day_diagnostics=pd.DataFrame(active_rows),
+        active_days_by_month=pd.DataFrame(active_month_rows),
+        width_by_regime=pd.DataFrame(width_rows),
+        pinball_by_quantile=pd.DataFrame(pinball_rows),
+        conservative_variant_grid=conservative,
+        daily_max_gap_detail=pd.DataFrame(daily_rows),
+        event_day_before_after=pd.DataFrame(event_rows),
+    )
 
 
 def evaluate_event_risk_tail_overlay_variants(
@@ -219,6 +376,292 @@ def apply_event_risk_tail_overlay(
         corrected.loc[day_mask & quantile_mask, "y_pred"].astype(float) + float(overlay.uplift)
     )
     return enforce_monotonic_quantiles(corrected)
+
+
+def _before_after_frames(
+    *,
+    eval_frame: pd.DataFrame,
+    calibration_frame: pd.DataFrame,
+    risk_score_column: str,
+    risk_threshold_quantile: float,
+    risk_aggregation: str,
+    residual_quantile: float,
+    max_uplift: float,
+    target_quantiles: Iterable[float],
+    calibration_method: str,
+    calibration_group_by: str | None,
+    calibration_min_group_size: int,
+    interval_coverage_floors: dict[str, float] | None,
+    regime_threshold: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, EventRiskTailOverlay]:
+    before = _hourly_cqr(
+        eval_frame,
+        calibration_frame=calibration_frame,
+        calibration_method=calibration_method,
+        calibration_group_by=calibration_group_by,
+        calibration_min_group_size=calibration_min_group_size,
+        interval_coverage_floors=interval_coverage_floors,
+        risk_score_column=risk_score_column,
+        regime_threshold=regime_threshold,
+    )
+    overlay = fit_event_risk_tail_overlay(
+        enforce_monotonic_quantiles(calibration_frame),
+        risk_score_column=risk_score_column,
+        risk_threshold_quantile=risk_threshold_quantile,
+        risk_aggregation=risk_aggregation,
+        residual_quantile=residual_quantile,
+        max_uplift=max_uplift,
+        target_quantiles=target_quantiles,
+    )
+    after = apply_event_risk_tail_overlay(before, overlay)
+    return before, after, overlay
+
+
+def _quantile_changed(before: pd.DataFrame, after: pd.DataFrame, quantile: float) -> bool:
+    before_grid = _prediction_grid(before)
+    after_grid = _prediction_grid(after)
+    before_column = _resolve_quantile_column(before_grid.columns, quantile)
+    after_column = _resolve_quantile_column(after_grid.columns, quantile)
+    if before_column is None or after_column is None:
+        return False
+    return not np.allclose(before_grid[before_column].to_numpy(dtype=float), after_grid[after_column].to_numpy(dtype=float))
+
+
+def _active_mask(frame: pd.DataFrame, overlay: EventRiskTailOverlay) -> pd.Series:
+    point = _point_context(frame, overlay.risk_score_column)
+    daily_risk = _daily_risk_scores(frame, overlay.risk_score_column, overlay.risk_aggregation)
+    active_days = set(daily_risk[daily_risk >= overlay.risk_threshold].index)
+    return point["day"].isin(active_days)
+
+
+def _point_context(frame: pd.DataFrame, risk_score_column: str) -> pd.DataFrame:
+    context = frame.loc[:, ["ds", "y", risk_score_column]].drop_duplicates("ds").copy()
+    context["ds"] = pd.to_datetime(context["ds"])
+    context["day"] = context["ds"].dt.floor("D")
+    context["month"] = context["ds"].dt.to_period("M").astype(str)
+    return context.sort_values("ds").reset_index(drop=True)
+
+
+def _wide_metrics_frame(before: pd.DataFrame, after: pd.DataFrame, risk_score_column: str) -> pd.DataFrame:
+    before_grid = _prediction_grid(before)
+    after_grid = _prediction_grid(after)
+    point = _point_context(before, risk_score_column).set_index("ds")
+    result = point.copy()
+    for label, grid in [("before", before_grid), ("after", after_grid)]:
+        for quantile in [0.01, 0.50, 0.99]:
+            column = _resolve_quantile_column(grid.columns, quantile)
+            if column is not None:
+                result[f"q{int(quantile * 100):02d}_{label}"] = grid[column]
+        q01_column = _resolve_quantile_column(grid.columns, 0.01)
+        q99_column = _resolve_quantile_column(grid.columns, 0.99)
+        if q01_column is not None and q99_column is not None:
+            result[f"width98_{label}"] = grid[q99_column] - grid[q01_column]
+        if q99_column is not None:
+            result[f"q99_excess_{label}"] = (result["y"].astype(float) - grid[q99_column].astype(float)).clip(lower=0.0)
+            result[f"q99_gap_{label}"] = result["y"].astype(float) - grid[q99_column].astype(float)
+    return result.reset_index()
+
+
+def _active_day_diagnostic_rows(
+    split: str,
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    overlay: EventRiskTailOverlay,
+) -> list[dict[str, object]]:
+    metrics = _wide_metrics_frame(before, after, overlay.risk_score_column)
+    active = _active_mask(before, overlay).reset_index(drop=True)
+    rows = []
+    for label, mask in [("active", active), ("inactive", ~active)]:
+        subset = metrics.loc[mask].copy()
+        day_count = int(subset["day"].nunique()) if not subset.empty else 0
+        rows.append(
+            {
+                "split": split,
+                "segment": label,
+                "active_days": int(metrics.loc[active, "day"].nunique()),
+                "total_days": int(metrics["day"].nunique()),
+                "active_rate": float(active.groupby(metrics["day"]).first().mean()),
+                "segment_days": day_count,
+                "q99_excess_before": _safe_mean(subset, "q99_excess_before"),
+                "q99_excess_after": _safe_mean(subset, "q99_excess_after"),
+                "width98_before": _safe_mean(subset, "width98_before"),
+                "width98_after": _safe_mean(subset, "width98_after"),
+            }
+        )
+    return rows
+
+
+def _active_days_by_month_rows(
+    split: str,
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    overlay: EventRiskTailOverlay,
+) -> list[dict[str, object]]:
+    metrics = _wide_metrics_frame(before, after, overlay.risk_score_column)
+    active = _active_mask(before, overlay).reset_index(drop=True)
+    metrics["active"] = active
+    rows = []
+    for month, subset in metrics.groupby("month", sort=True):
+        day_active = subset.groupby("day", sort=True)["active"].first()
+        rows.append(
+            {
+                "split": split,
+                "month": month,
+                "active_days": int(day_active.sum()),
+                "total_days": int(day_active.size),
+                "active_rate": float(day_active.mean()),
+                "q99_excess_before": _safe_mean(subset, "q99_excess_before"),
+                "q99_excess_after": _safe_mean(subset, "q99_excess_after"),
+                "width98_before": _safe_mean(subset, "width98_before"),
+                "width98_after": _safe_mean(subset, "width98_after"),
+            }
+        )
+    return rows
+
+
+def _width_by_regime_rows(
+    split: str,
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    overlay: EventRiskTailOverlay,
+) -> list[dict[str, object]]:
+    metrics = _wide_metrics_frame(before, after, overlay.risk_score_column)
+    metrics["regime"] = _price_regime_labels(metrics["y"].astype(float))
+    daily_max_index = metrics.groupby("day", sort=True)["y"].idxmax()
+    metrics["is_daily_max"] = metrics.index.isin(daily_max_index)
+    metrics["active"] = _active_mask(before, overlay).reset_index(drop=True)
+    masks: list[tuple[str, pd.Series]] = [
+        ("all", pd.Series(True, index=metrics.index)),
+        ("normal", metrics["regime"].eq("normal")),
+        ("high", metrics["regime"].eq("high")),
+        ("spike", metrics["regime"].eq("spike")),
+        ("extreme", metrics["regime"].eq("extreme")),
+        ("daily_max", metrics["is_daily_max"]),
+        ("active_day_normal", metrics["active"] & metrics["regime"].eq("normal")),
+        ("active_day_high", metrics["active"] & metrics["regime"].eq("high")),
+        ("active_day_extreme", metrics["active"] & metrics["regime"].eq("extreme")),
+        ("inactive_day_normal", ~metrics["active"] & metrics["regime"].eq("normal")),
+        ("inactive_day_extreme", ~metrics["active"] & metrics["regime"].eq("extreme")),
+    ]
+    rows = []
+    for regime, mask in masks:
+        subset = metrics.loc[mask].copy()
+        width_before = _safe_mean(subset, "width98_before")
+        width_after = _safe_mean(subset, "width98_after")
+        rows.append(
+            {
+                "split": split,
+                "regime": regime,
+                "count": int(len(subset)),
+                "width98_before": width_before,
+                "width98_after": width_after,
+                "width98_delta": width_after - width_before,
+                "width98_ratio": width_after / width_before if width_before and not np.isnan(width_before) else np.nan,
+                "pinball_before": _subset_pinball(before, subset["ds"]) if not subset.empty else np.nan,
+                "pinball_after": _subset_pinball(after, subset["ds"]) if not subset.empty else np.nan,
+                "q99_excess_before": _safe_mean(subset, "q99_excess_before"),
+                "q99_excess_after": _safe_mean(subset, "q99_excess_after"),
+            }
+        )
+    return rows
+
+
+def _pinball_by_quantile_rows(split: str, before: pd.DataFrame, after: pd.DataFrame) -> list[dict[str, object]]:
+    rows = []
+    before_frame = before.copy()
+    after_frame = after.copy()
+    before_frame["quantile"] = before_frame["quantile"].astype(float)
+    after_frame["quantile"] = after_frame["quantile"].astype(float)
+    for quantile in sorted(before_frame["quantile"].unique()):
+        before_subset = before_frame.loc[np.isclose(before_frame["quantile"].astype(float), quantile)]
+        after_subset = after_frame.loc[np.isclose(after_frame["quantile"].astype(float), quantile)]
+        before_loss = _pinball_loss_series(before_subset)
+        after_loss = _pinball_loss_series(after_subset)
+        rows.append(
+            {
+                "split": split,
+                "quantile": float(quantile),
+                "pinball_before": before_loss,
+                "pinball_after": after_loss,
+                "delta": after_loss - before_loss,
+                "count": int(len(before_subset)),
+            }
+        )
+    return rows
+
+
+def _daily_max_gap_rows(
+    split: str,
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    overlay: EventRiskTailOverlay,
+) -> list[dict[str, object]]:
+    metrics = _wide_metrics_frame(before, after, overlay.risk_score_column)
+    metrics["active"] = _active_mask(before, overlay).reset_index(drop=True)
+    rows = []
+    for day, subset in metrics.groupby("day", sort=True):
+        max_idx = subset["y"].idxmax()
+        row = metrics.loc[max_idx]
+        rows.append(
+            {
+                "split": split,
+                "day": day,
+                "y_max": float(row["y"]),
+                "q99_before": float(row.get("q99_before", np.nan)),
+                "q99_after": float(row.get("q99_after", np.nan)),
+                "gap_before": float(row.get("q99_gap_before", np.nan)),
+                "gap_after": float(row.get("q99_gap_after", np.nan)),
+                "active": bool(row["active"]),
+                "spike_score_mean": float(subset[overlay.risk_score_column].mean()),
+                "width98_before": float(row.get("width98_before", np.nan)),
+                "width98_after": float(row.get("width98_after", np.nan)),
+            }
+        )
+    return rows
+
+
+def _event_day_rows(
+    split: str,
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    overlay: EventRiskTailOverlay,
+) -> list[dict[str, object]]:
+    daily_rows = pd.DataFrame(_daily_max_gap_rows(split, before, after, overlay))
+    if daily_rows.empty:
+        return []
+    daily_rows["gap_improvement"] = daily_rows["gap_before"] - daily_rows["gap_after"]
+    return daily_rows.sort_values("gap_before", ascending=False).head(20).to_dict("records")
+
+
+def _price_regime_labels(y: pd.Series) -> pd.Series:
+    p80 = float(y.quantile(0.80))
+    p90 = float(y.quantile(0.90))
+    p95 = float(y.quantile(0.95))
+    labels = pd.Series("normal", index=y.index, dtype=object)
+    labels.loc[(y >= p80) & (y < p90)] = "high"
+    labels.loc[(y >= p90) & (y < p95)] = "spike"
+    labels.loc[y >= p95] = "extreme"
+    return labels
+
+
+def _subset_pinball(frame: pd.DataFrame, timestamps: pd.Series) -> float:
+    subset = frame.loc[pd.to_datetime(frame["ds"]).isin(pd.to_datetime(timestamps))].copy()
+    if subset.empty:
+        return np.nan
+    return _pinball_loss_series(subset)
+
+
+def _pinball_loss_series(frame: pd.DataFrame) -> float:
+    errors = frame["y"].astype(float).to_numpy() - frame["y_pred"].astype(float).to_numpy()
+    quantiles = frame["quantile"].astype(float).to_numpy()
+    losses = np.maximum(quantiles * errors, (quantiles - 1.0) * errors)
+    return float(np.mean(losses))
+
+
+def _safe_mean(frame: pd.DataFrame, column: str) -> float:
+    if frame.empty or column not in frame.columns:
+        return np.nan
+    return float(frame[column].astype(float).mean())
 
 
 def _hourly_cqr(

@@ -5,6 +5,7 @@ import pytest
 
 from pjm_forecast.evaluation.event_risk_tail_overlay import (
     apply_event_risk_tail_overlay,
+    build_event_risk_tail_overlay_audit_artifacts,
     evaluate_event_risk_tail_overlay_grid,
     fit_event_risk_tail_overlay,
 )
@@ -100,3 +101,44 @@ def test_evaluate_event_risk_tail_overlay_grid_reports_baseline_and_candidates()
     assert {"q99_exceedance_rate", "q99_excess_mean", "active_day_share", "uplift"} <= set(
         result.validation_summary.columns
     )
+
+
+def test_build_event_risk_tail_overlay_audit_artifacts_reports_cost_and_protocol() -> None:
+    validation = _frame(
+        [
+            ("2026-01-01 00:00:00", 100.0, 100.0, 0.20),
+            ("2026-01-02 00:00:00", 180.0, 100.0, 0.90),
+            ("2026-01-03 00:00:00", 110.0, 100.0, 0.20),
+            ("2026-01-04 00:00:00", 170.0, 100.0, 0.95),
+        ]
+    )
+    test = _frame(
+        [
+            ("2026-02-01 00:00:00", 100.0, 100.0, 0.20),
+            ("2026-02-02 00:00:00", 200.0, 100.0, 0.95),
+        ]
+    )
+
+    artifacts = build_event_risk_tail_overlay_audit_artifacts(
+        validation,
+        test_frame=test,
+        validation_holdout_days=2,
+        risk_score_column="spike_score",
+        risk_threshold_quantile=0.5,
+        risk_aggregation="mean",
+        residual_quantile=1.0,
+        max_uplift=50.0,
+        target_quantiles=[0.99, 0.995],
+        interval_coverage_floors=None,
+        risk_score_input_columns=["zonal_load_forecast"],
+    )
+
+    assert artifacts.spike_score_audit["risk_score_column"] == "spike_score"
+    assert artifacts.spike_score_audit["uses_y"] is False
+    assert artifacts.implementation_audit["test_used_for_selection"] is False
+    assert artifacts.implementation_audit["q50_changed"] is False
+    assert {"validation_holdout", "test"} <= set(artifacts.active_day_diagnostics["split"])
+    assert {"normal", "all", "active_day_normal"} <= set(artifacts.width_by_regime["regime"])
+    assert {0.5, 0.99, 0.995} <= set(artifacts.pinball_by_quantile["quantile"])
+    assert "decision" in artifacts.conservative_variant_grid.columns
+    assert {"gap_before", "gap_after", "active"} <= set(artifacts.daily_max_gap_detail.columns)

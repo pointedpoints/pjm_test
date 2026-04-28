@@ -65,6 +65,7 @@ Interpretation:
 
 ```powershell
 uv run python scripts\experiments\evaluate_event_risk_tail_overlay.py `
+  --config configs\pjm_day_ahead_current_processed.yaml `
   --validation-prediction artifacts_current\predictions\nhits_tail_grid_weighted_main_validation_seed7.parquet `
   --test-prediction artifacts_current\predictions\nhits_tail_grid_weighted_main_test_seed7.parquet `
   --output-dir artifacts_phase3\event_risk_tail_overlay_sparse `
@@ -106,9 +107,43 @@ After promoting the validation-selected p90/r100/cap50 rule into canonical:
 The overlay improves the distribution objective and upper-tail misses while
 leaving P50 unchanged.
 
+## Promotion Audit Artifacts
+
+The experiment command now exports the audit files requested by the promotion
+review:
+
+- `overlay_implementation_audit.json`
+- `spike_score_audit.json`
+- `active_day_diagnostics.csv`
+- `active_days_by_month.csv`
+- `width_by_regime.csv`
+- `pinball_by_quantile.csv`
+- `conservative_variant_grid.csv`
+- `daily_max_gap_detail.csv`
+- `event_day_before_after.csv`
+
+Key audit checks from `artifacts_phase3/event_risk_tail_overlay_sparse`:
+
+| Check | Result |
+|---|---:|
+| `test_used_for_selection` | `false` |
+| `q50_changed` | `false` |
+| `crossing_after_overlay` | `0.0` |
+| spike score leak flags | all false |
+| test active days | 43 / 364 |
+| test all-hour width98 ratio | 1.085 |
+| test normal-hour width98 ratio | 1.052 |
+| test active-day normal width98 ratio | 1.685 |
+
+The conservative validation grid did not identify a lower-width variant with
+the same validation pinball gain. The selected p90/r100/cap50 variant remains
+the validation winner by pinball, while p95/r99 is materially narrower but gives
+back most of the pinball and q99-excess improvement.
+
 ## Decision
 
-Promote the event-risk tail overlay into canonical.
+Keep the event-risk tail overlay enabled as the canonical candidate, with the
+audit artifacts above attached to the decision.
 
 The tradeoff is acceptable:
 
@@ -119,7 +154,9 @@ The tradeoff is acceptable:
 - crossing remains `0`
 - width98 increases from `69.15` to `75.05`
 
-The remaining miss on the largest event day is still large, so this is not the
-end of tail work. The next step should enrich risk context beyond `spike_score`
-alone, especially `price_lag24_max` and `prior_day_price_max_ramp`, but those
-columns must be explicitly written into prediction context before use.
+The width audit adds one caveat: normal-hour width rises by about `5.2%`, just
+above the `5%` review line, and normal hours on active days widen by construction
+because this overlay is day-level. That is acceptable for the current canonical
+candidate because the all-hour width ratio is `1.085`, P50 is unchanged, and the
+tail benefit is large, but the next tail iteration should try a narrower
+hour-level event gate before increasing uplift further.

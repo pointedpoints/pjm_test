@@ -2,8 +2,10 @@ from .dm import dm_test
 from .evaluator import EvaluationBundle, Evaluator, LoadedPredictionRun
 from .event_risk_tail_overlay import (
     EventRiskTailOverlay,
+    EventRiskTailOverlayAuditArtifacts,
     EventRiskTailOverlayGridResult,
     apply_event_risk_tail_overlay,
+    build_event_risk_tail_overlay_audit_artifacts,
     evaluate_event_risk_tail_overlay_grid,
     fit_event_risk_tail_overlay,
 )
@@ -19,6 +21,7 @@ from .tail_tradeoff import compute_width_adjusted_tail_tradeoff
 __all__ = [
     "EvaluationBundle",
     "EventRiskTailOverlay",
+    "EventRiskTailOverlayAuditArtifacts",
     "EventRiskTailOverlayGridResult",
     "HourXRegimeGridResult",
     "MedianBiasGridResult",
@@ -28,6 +31,7 @@ __all__ = [
     "QualityGateResult",
     "QualityMetrics",
     "apply_event_risk_tail_overlay",
+    "build_event_risk_tail_overlay_audit_artifacts",
     "compute_hourly_mae",
     "compute_metrics",
     "compute_quantile_diagnostics",
