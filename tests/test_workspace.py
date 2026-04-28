@@ -9,7 +9,7 @@ import yaml
 
 from pjm_forecast.data.ingress import PreparedDataResult
 from pjm_forecast.models.base import ForecastModel
-from pjm_forecast.pipeline import STAGE_ORDER
+from pjm_forecast.pipeline import STAGE_ORDER, _run_audit_event_risk_overlay, _run_export_model_snapshot
 from pjm_forecast.prepared_data import PreparedDataset
 from pjm_forecast.workspace import Workspace, resolve_mlp_unit_search_options
 
@@ -248,6 +248,9 @@ def test_workspace_finalize_quality_flow_writes_summary_and_manifest(tmp_path: P
     assert str(event_audit_dir / "overlay_implementation_audit.json") in artifact_paths
     assert str(event_audit_dir / "spike_score_audit.json") in artifact_paths
     assert str(event_audit_dir / "width_by_regime.csv") in artifact_paths
+    copied = workspace.export_report("test")
+    assert workspace.artifacts.report_asset("test_quality_gate_summary.csv") in copied
+    assert workspace.artifacts.report_asset("test_run_manifest.json") in copied
 
 
 def test_workspace_finalize_quality_flow_writes_manifest_when_required_artifact_is_missing(tmp_path: Path) -> None:
@@ -327,14 +330,119 @@ def test_workspace_audit_event_risk_overlay_rejects_malformed_calibration_config
         workspace.audit_event_risk_overlay("test")
 
 
-def test_pipeline_stage_order_excludes_retrieval() -> None:
+def test_pipeline_stage_order_includes_quality_closure() -> None:
     assert STAGE_ORDER == [
         "prepare_data",
         "tune_model",
         "backtest_all_models",
         "evaluate_and_plot",
+        "audit_event_risk_overlay",
+        "finalize_quality_flow",
         "export_report_assets",
+        "export_model_snapshot",
     ]
+
+
+def test_pipeline_audit_event_risk_overlay_skips_when_overlay_disabled() -> None:
+    class Config:
+        raw = {"report": {"quantile_postprocess": {"event_risk_tail_overlay": {"enabled": False}}}}
+
+    class WorkspaceStub:
+        config = Config()
+        audit_calls = 0
+
+        def audit_event_risk_overlay(self, split: str) -> None:
+            del split
+            self.audit_calls += 1
+
+    workspace = WorkspaceStub()
+
+    _run_audit_event_risk_overlay(workspace, "test")
+
+    assert workspace.audit_calls == 0
+
+
+def test_pipeline_audit_event_risk_overlay_runs_when_overlay_enabled() -> None:
+    class Config:
+        raw = {"report": {"quantile_postprocess": {"event_risk_tail_overlay": {"enabled": True}}}}
+
+    class WorkspaceStub:
+        config = Config()
+        audit_calls: list[str]
+
+        def __init__(self) -> None:
+            self.audit_calls = []
+
+        def audit_event_risk_overlay(self, split: str) -> None:
+            self.audit_calls.append(split)
+
+    workspace = WorkspaceStub()
+
+    _run_audit_event_risk_overlay(workspace, "test")
+
+    assert workspace.audit_calls == ["test"]
+
+
+def test_pipeline_export_model_snapshot_uses_tuning_model_and_skips_existing_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "nhits_candidate_snapshot" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{}", encoding="utf-8")
+
+    class Config:
+        tuning = {"model_name": "nhits_candidate"}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+        models = {
+            "nhits_candidate": {"type": "nhits"},
+            "seasonal_naive": {"type": "seasonal_naive"},
+        }
+
+    class Artifacts:
+        def snapshot_manifest(self, snapshot_name: str) -> Path:
+            assert snapshot_name == "nhits_candidate_snapshot"
+            return manifest_path
+
+    class WorkspaceStub:
+        config = Config()
+        artifacts = Artifacts()
+        exports: list[tuple[str, str]]
+
+        def __init__(self) -> None:
+            self.exports = []
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str) -> None:
+            self.exports.append((model_name, snapshot_name))
+
+    workspace = WorkspaceStub()
+
+    _run_export_model_snapshot(workspace, "test")
+
+    assert workspace.exports == []
+
+
+def test_pipeline_export_model_snapshot_ignores_non_neural_model(tmp_path: Path) -> None:
+    class Config:
+        tuning = {}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+        models = {"seasonal_naive": {"type": "seasonal_naive"}}
+
+    class Artifacts:
+        def snapshot_manifest(self, snapshot_name: str) -> Path:
+            return tmp_path / snapshot_name / "manifest.json"
+
+    class WorkspaceStub:
+        config = Config()
+        artifacts = Artifacts()
+        exports = 0
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str) -> None:
+            del model_name, snapshot_name
+            self.exports += 1
+
+    workspace = WorkspaceStub()
+
+    _run_export_model_snapshot(workspace, "test")
+
+    assert workspace.exports == 0
 
 
 def test_resolve_mlp_unit_search_options_prefers_configured_values() -> None:

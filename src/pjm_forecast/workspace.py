@@ -247,6 +247,8 @@ class ArtifactStore:
             self.spike_score_diagnostics(split),
             self.scenario_diagnostics(split),
             self.dm(split),
+            self.quality_gate_summary(split),
+            self.run_manifest(split),
             self.hourly_mae_plot(split),
             self.high_vol_week_plot(split),
         ]:
