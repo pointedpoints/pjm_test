@@ -47,7 +47,32 @@ uv pip install git+https://github.com/jeslago/epftoolbox.git
 
 ## Canonical Workflow
 
-Prepare processed data:
+The canonical closure pipeline is the wrapper below. Run validation first, then
+test:
+
+```powershell
+uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split validation
+uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+```
+
+After backtesting, the wrapper stage order is:
+
+1. evaluate
+2. audit event-risk tail overlay
+3. finalize quality flow
+4. export report assets
+5. export model snapshot
+
+The wrapper writes:
+
+- predictions under `artifacts_current/predictions/`
+- metrics under `artifacts_current/metrics/`
+- event-risk audit artifacts under `artifacts_current/metrics/{split}_event_risk_tail_overlay/`
+- report exports under `artifacts_current/report/`
+- model snapshot under `artifacts_current/models/nhits_tail_grid_weighted_main_snapshot/`
+- run manifest under `artifacts_current/metrics/{split}_run_manifest.json`
+
+Individual stages can still be run for targeted reruns. Prepare processed data:
 
 ```powershell
 uv run python scripts\prepare_data.py --config configs\pjm_day_ahead_current_processed.yaml
@@ -59,23 +84,15 @@ Tune the model named by `tuning.model_name`:
 uv run python scripts\tune_model.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
-Run backtest:
+Run backtest and closure stages:
 
 ```powershell
 uv run python scripts\backtest_all_models.py --config configs\pjm_day_ahead_current_processed.yaml --split test
-```
-
-Evaluate and export assets:
-
-```powershell
 uv run python scripts\evaluate_and_plot.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\audit_event_risk_overlay.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\finalize_quality_flow.py --config configs\pjm_day_ahead_current_processed.yaml --split test
 uv run python scripts\export_report_assets.py --config configs\pjm_day_ahead_current_processed.yaml --split test
-```
-
-Or run the pipeline wrapper:
-
-```powershell
-uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\ops\export_model_snapshot.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
 ## Data Contracts
