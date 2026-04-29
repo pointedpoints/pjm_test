@@ -16,9 +16,12 @@ lightning_logs/
 data/raw/
 data/processed/
 data/processed_current/
+data/processed_*/
 artifacts/**
 artifacts_current/
 artifacts_current_smoke/
+artifacts_*/
+configs/data/
 !artifacts/.gitkeep
 !data/.gitkeep
 tmp_resume_check.parquet

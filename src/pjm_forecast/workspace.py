@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
@@ -13,13 +14,14 @@ import pandas as pd
 from .backtest import get_daily_split_days, run_rolling_backtest
 from .config import ProjectConfig, load_config
 from .data import prepare_dataset
-from .evaluation import compute_metrics
+from .evaluation import build_event_risk_tail_overlay_audit_artifacts, compute_metrics
 from .evaluation.evaluator import Evaluator
 from .model_io import load_model_snapshot, save_model_snapshot_bundle, validate_model_prediction_output
 from .models import build_model as build_forecast_model
 from .models.base import ForecastModel
 from .paths import ensure_project_directories
 from .prepared_data import FeatureSchema, PreparedDataset
+from .quality_flow import build_quality_gate_summary, build_run_manifest, write_json
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
 SplitName = Literal["validation", "test"]
@@ -63,9 +65,6 @@ def resolve_mlp_unit_search_options(tuning_cfg: dict[str, object]) -> list[str]:
 class ArtifactStore:
     directories: dict[str, Path]
 
-    def raw_csv(self, filename: str) -> Path:
-        return self.directories["raw_data_dir"] / filename
-
     def feature_store(self) -> Path:
         return self.directories["processed_data_dir"] / "feature_store.parquet"
 
@@ -94,8 +93,23 @@ class ArtifactStore:
     def quantile_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_quantile_diagnostics.csv"
 
+    def regime_metrics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_regime_metrics.csv"
+
+    def spike_score_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_spike_score_diagnostics.csv"
+
     def scenario_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_scenario_diagnostics.csv"
+
+    def event_risk_audit_dir(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_event_risk_tail_overlay"
+
+    def quality_gate_summary(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_quality_gate_summary.csv"
+
+    def run_manifest(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_run_manifest.json"
 
     def dm(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_dm.csv"
@@ -129,6 +143,18 @@ class ArtifactStore:
 
     def write_quantile_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
         output_path = self.quantile_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_regime_metrics(self, split: str, regime_metrics_df: pd.DataFrame) -> Path:
+        output_path = self.regime_metrics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        regime_metrics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.spike_score_diagnostics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         diagnostics_df.to_csv(output_path, index=False)
         return output_path
@@ -209,23 +235,6 @@ class ArtifactStore:
             )
         return runs
 
-    def iter_prediction_files(self, split: str | None = None) -> list[Path]:
-        files = sorted(self.directories["prediction_dir"].glob("*.parquet"))
-        if split is None:
-            return files
-
-        selected: list[Path] = []
-        for path in files:
-            try:
-                frame = pd.read_parquet(path, columns=["split"])
-            except (FileNotFoundError, ValueError, KeyError):
-                continue
-            if frame.empty:
-                continue
-            if frame["split"].iloc[0] == split:
-                selected.append(path)
-        return selected
-
     def export_report_bundle(self, split: str) -> list[Path]:
         report_dir = self.directories["report_dir"]
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -234,8 +243,12 @@ class ArtifactStore:
         for source in [
             self.metrics(split),
             self.quantile_diagnostics(split),
+            self.regime_metrics(split),
+            self.spike_score_diagnostics(split),
             self.scenario_diagnostics(split),
             self.dm(split),
+            self.quality_gate_summary(split),
+            self.run_manifest(split),
             self.hourly_mae_plot(split),
             self.high_vol_week_plot(split),
         ]:
@@ -244,9 +257,6 @@ class ArtifactStore:
                 shutil.copy2(source, target)
                 copied.append(target)
         return copied
-
-    def export_report_assets(self, split: str) -> list[Path]:
-        return self.export_report_bundle(split)
 
     def _plot_path(self, split: str, kind: str) -> Path:
         if kind == "hourly_mae":
@@ -309,19 +319,6 @@ class ModelStore:
 
     def load_snapshot(self, name_or_path: str | Path = "nbeatsx_snapshot") -> ForecastModel:
         return load_model_snapshot(self._resolve_snapshot_path(name_or_path))
-
-    def load_nbeatsx_snapshot(self, name_or_path: str | Path = "nbeatsx_snapshot") -> ForecastModel:
-        return self.load_snapshot(name_or_path)
-
-    def predict_snapshot(
-        self,
-        name_or_path: str | Path,
-        *,
-        history_df: pd.DataFrame,
-        future_df: pd.DataFrame,
-    ) -> pd.DataFrame:
-        model = self.load_snapshot(name_or_path)
-        return model.predict(history_df=history_df, future_df=future_df)
 
     def predict_snapshot_to_parquet(
         self,
@@ -392,12 +389,14 @@ class Workspace:
             return
 
         best_params = json.loads(best_params_path.read_text(encoding="utf-8"))
-        best_params["mlp_units"] = decode_mlp_units(best_params.get("mlp_units"))
+        if "mlp_units" in best_params:
+            best_params["mlp_units"] = decode_mlp_units(best_params["mlp_units"])
         self.config.models[model_name].update(best_params)
         self._loaded_best_params.add(model_name)
 
     def build_model(self, model_name: str, *, seed: int | None = None, disable_ensemble: bool = False):
-        if model_name == "nbeatsx":
+        model_type = str(self.config.models[model_name].get("type", "")).lower()
+        if model_type in {"nbeatsx", "nhits"}:
             self._apply_best_params(model_name)
         return self._raw_build_model(model_name, seed=seed, disable_ensemble=disable_ensemble)
 
@@ -412,42 +411,46 @@ class Workspace:
             split_boundaries_path=self.artifacts.split_boundaries(),
         )
 
-    def tune_nbeatsx(self) -> None:
+    def tune_model(self) -> None:
         feature_df = self.feature_frame()
         self.schema().validate_nbeatsx_feature_frame(feature_df)
         split_boundaries = self.split_boundaries()
         validation_days = get_daily_split_days(feature_df, split_boundaries, split_name="validation")
         tuning_cfg = self.config.tuning
+        model_name = str(tuning_cfg["model_name"])
+        model_type = str(self.config.models[model_name].get("type", "")).lower()
+        if model_type not in {"nbeatsx", "nhits"}:
+            raise ValueError(f"Generic tuning only supports nbeatsx/nhits models, got {model_type!r} for {model_name!r}.")
         use_ensemble_in_tuning = bool(tuning_cfg.get("use_ensemble_in_tuning", False))
         metric_name = str(tuning_cfg.get("metric", "mae")).lower()
 
         def objective(trial: optuna.Trial) -> float:
-            self.config.models["nbeatsx"]["input_size"] = trial.suggest_categorical(
+            self.config.models[model_name]["input_size"] = trial.suggest_categorical(
                 "input_size",
                 tuning_cfg["search_space"]["input_size"],
             )
-            self.config.models["nbeatsx"]["learning_rate"] = trial.suggest_float(
+            self.config.models[model_name]["learning_rate"] = trial.suggest_float(
                 "learning_rate",
                 tuning_cfg["search_space"]["learning_rate"][0],
                 tuning_cfg["search_space"]["learning_rate"][1],
                 log=True,
             )
-            self.config.models["nbeatsx"]["batch_size"] = trial.suggest_categorical(
+            self.config.models[model_name]["batch_size"] = trial.suggest_categorical(
                 "batch_size",
                 tuning_cfg["search_space"]["batch_size"],
             )
-            self.config.models["nbeatsx"]["max_steps"] = trial.suggest_int(
+            self.config.models[model_name]["max_steps"] = trial.suggest_int(
                 "max_steps",
                 tuning_cfg["search_space"]["max_steps"][0],
                 tuning_cfg["search_space"]["max_steps"][1],
             )
-            self.config.models["nbeatsx"]["dropout_prob_theta"] = trial.suggest_float(
+            self.config.models[model_name]["dropout_prob_theta"] = trial.suggest_float(
                 "dropout_prob_theta",
                 tuning_cfg["search_space"]["dropout"][0],
                 tuning_cfg["search_space"]["dropout"][1],
             )
             mlp_units_key = trial.suggest_categorical("mlp_units", resolve_mlp_unit_search_options(tuning_cfg))
-            self.config.models["nbeatsx"]["mlp_units"] = decode_mlp_units(mlp_units_key)
+            self.config.models[model_name]["mlp_units"] = decode_mlp_units(mlp_units_key)
 
             predictions = run_rolling_backtest(
                 config=self.config,
@@ -455,17 +458,17 @@ class Workspace:
                 split_name="validation",
                 forecast_days=validation_days,
                 model_builder=lambda: self._raw_build_model(
-                    "nbeatsx",
+                    model_name,
                     seed=self.config.project["benchmark_seed"],
                     disable_ensemble=not use_ensemble_in_tuning,
                 ),
-                model_name="nbeatsx",
+                model_name=model_name,
                 seed=self.config.project["benchmark_seed"],
             )
             return float(compute_metrics(predictions)[metric_name])
 
         storage = tuning_cfg.get("optuna_storage")
-        study_name = tuning_cfg.get("optuna_study_name", "nbeatsx_tuning")
+        study_name = tuning_cfg.get("optuna_study_name", f"{model_name}_tuning")
         if storage:
             study = optuna.create_study(
                 study_name=study_name,
@@ -477,8 +480,11 @@ class Workspace:
             study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=tuning_cfg["n_trials"], catch=(RuntimeError, ValueError))
 
-        self.artifacts.best_params("nbeatsx").write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
-        self._loaded_best_params.discard("nbeatsx")
+        self.artifacts.best_params(model_name).write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
+        self._loaded_best_params.discard(model_name)
+
+    def tune_nbeatsx(self) -> None:
+        self.tune_model()
 
     def backtest(self, split: SplitName = "test") -> None:
         feature_df = self.feature_frame()
@@ -514,12 +520,126 @@ class Workspace:
         bundle = evaluator.load_runs(split)
         metrics_df = evaluator.compute_metrics(bundle)
         evaluator.compute_quantile_diagnostics(bundle)
+        evaluator.compute_regime_metrics(bundle)
+        evaluator.compute_spike_score_diagnostics(bundle)
         evaluator.compute_scenario_diagnostics(bundle)
         evaluator.compute_dm(bundle)
         evaluator.render_plots(bundle, metrics_df, split)
 
     def export_report(self, split: SplitName = "test") -> list[Path]:
         return self.artifacts.export_report_bundle(split)
+
+    def finalize_quality_flow(self, split: SplitName = "test") -> list[Path]:
+        model_name = str(self.config.backtest["benchmark_models"][0])
+        seed = int(self.config.project["benchmark_seed"])
+        metrics_path = self.artifacts.metrics(split)
+        quantile_diagnostics_path = self.artifacts.quantile_diagnostics(split)
+        regime_metrics_path = self.artifacts.regime_metrics(split)
+        spike_score_diagnostics_path = self.artifacts.spike_score_diagnostics(split)
+        scenario_diagnostics_path = self.artifacts.scenario_diagnostics(split)
+        event_audit_dir = self.artifacts.event_risk_audit_dir(split)
+        overlay_implementation_audit_path = event_audit_dir / "overlay_implementation_audit.json"
+        spike_score_audit_path = event_audit_dir / "spike_score_audit.json"
+        width_by_regime_path = event_audit_dir / "width_by_regime.csv"
+        dm_path = self.artifacts.dm(split)
+        quality_path = self.artifacts.quality_gate_summary(split)
+        manifest_path = self.artifacts.run_manifest(split)
+        artifact_paths = [
+            metrics_path,
+            quantile_diagnostics_path,
+            overlay_implementation_audit_path,
+            spike_score_audit_path,
+            width_by_regime_path,
+            regime_metrics_path,
+            spike_score_diagnostics_path,
+            scenario_diagnostics_path,
+            dm_path,
+            quality_path,
+        ]
+
+        try:
+            summary = build_quality_gate_summary(
+                split=split,
+                metrics_path=metrics_path,
+                quantile_diagnostics_path=quantile_diagnostics_path,
+                event_audit_dir=event_audit_dir,
+            )
+            quality_path.parent.mkdir(parents=True, exist_ok=True)
+            summary.to_csv(quality_path, index=False)
+        finally:
+            manifest = build_run_manifest(
+                split=split,
+                config_path=self.config.path,
+                model_name=model_name,
+                seed=seed,
+                artifact_paths=artifact_paths,
+            )
+            write_json(manifest_path, manifest)
+        return [quality_path, manifest_path]
+
+    def audit_event_risk_overlay(self, split: SplitName = "test") -> Path:
+        postprocess_cfg = self.config.report.get("quantile_postprocess", {})
+        if not isinstance(postprocess_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess must be a mapping for event-risk audit.")
+        event_cfg = postprocess_cfg.get("event_risk_tail_overlay", {})
+        if not isinstance(event_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess.event_risk_tail_overlay must be a mapping.")
+        if not event_cfg or not bool(event_cfg.get("enabled", False)):
+            raise ValueError("report.quantile_postprocess.event_risk_tail_overlay must be enabled.")
+
+        calibration_cfg = postprocess_cfg.get("calibration")
+        if calibration_cfg is None:
+            calibration_cfg = {}
+        elif not isinstance(calibration_cfg, Mapping):
+            raise ValueError("report.quantile_postprocess.calibration must be a mapping for event-risk audit.")
+        source_split = str(event_cfg.get("source_split", "validation"))
+        if source_split != "validation":
+            raise ValueError("event-risk audit must use validation source_split.")
+        model_name = str(event_cfg.get("model_name", self.config.backtest["benchmark_models"][0]))
+        seed = int(event_cfg.get("seed", self.config.project["benchmark_seed"]))
+        risk_score_column = str(event_cfg.get("risk_score_column", "spike_score"))
+
+        source_frame = pd.read_parquet(self.artifacts.prediction(model_name, source_split, seed))
+        target_frame = pd.read_parquet(self.artifacts.prediction(model_name, split, seed))
+        audit = build_event_risk_tail_overlay_audit_artifacts(
+            source_frame,
+            test_frame=target_frame if split != source_split else None,
+            validation_holdout_days=int(event_cfg.get("validation_holdout_days", 91)),
+            risk_score_column=risk_score_column,
+            risk_threshold_quantile=float(event_cfg.get("risk_threshold_quantile", 0.90)),
+            risk_aggregation=str(event_cfg.get("risk_aggregation", "mean")),
+            residual_quantile=float(event_cfg.get("residual_quantile", 1.0)),
+            max_uplift=float(event_cfg.get("max_uplift", 50.0)),
+            target_quantiles=event_cfg.get("target_quantiles", [0.99, 0.995]),
+            calibration_method=str(calibration_cfg.get("method", "cqr_asymmetric")),
+            calibration_group_by=calibration_cfg.get("group_by", "hour"),
+            calibration_min_group_size=int(calibration_cfg.get("min_group_size", 24)),
+            interval_coverage_floors=calibration_cfg.get("interval_coverage_floors"),
+            regime_threshold=float(calibration_cfg.get("regime_threshold", 0.50)),
+            risk_score_input_columns=self._spike_score_input_columns(risk_score_column),
+            active_hour_set=str(event_cfg.get("active_hour_set", "all")),
+            conservative_active_hour_sets=event_cfg.get("conservative_active_hour_sets", ("all", "peak_hours")),
+        )
+
+        output_dir = self.artifacts.event_risk_audit_dir(split)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(output_dir / "overlay_implementation_audit.json", audit.implementation_audit)
+        write_json(output_dir / "spike_score_audit.json", audit.spike_score_audit)
+        audit.active_day_diagnostics.to_csv(output_dir / "active_day_diagnostics.csv", index=False)
+        audit.active_days_by_month.to_csv(output_dir / "active_days_by_month.csv", index=False)
+        audit.width_by_regime.to_csv(output_dir / "width_by_regime.csv", index=False)
+        audit.pinball_by_quantile.to_csv(output_dir / "pinball_by_quantile.csv", index=False)
+        audit.conservative_variant_grid.to_csv(output_dir / "conservative_variant_grid.csv", index=False)
+        audit.daily_max_gap_detail.to_csv(output_dir / "daily_max_gap_detail.csv", index=False)
+        audit.event_day_before_after.to_csv(output_dir / "event_day_before_after.csv", index=False)
+        return output_dir
+
+    def _spike_score_input_columns(self, risk_score_column: str) -> list[str]:
+        for feature in self.config.raw.get("features", {}).get("derived_features", []) or []:
+            if feature.get("kind") != "spike_score" or feature.get("name") != risk_score_column:
+                continue
+            return [str(item.get("source")) for item in feature.get("inputs", []) if item.get("source")]
+        return []
 
     def export_model_snapshot(self, model_name: str = "nbeatsx", snapshot_name: str | None = None) -> Path:
         window_days = self.config.backtest["rolling_window_days"]
@@ -552,21 +672,6 @@ class Workspace:
             snapshot_name_or_path,
             history_df=history_df,
             future_df=future_df,
-            output_path=output_path,
-        )
-
-    def predict_nbeatsx_snapshot(
-        self,
-        *,
-        snapshot_name_or_path: str | Path = "nbeatsx_snapshot",
-        history_path: str | Path,
-        future_path: str | Path,
-        output_path: str | Path,
-    ) -> Path:
-        return self.predict_model_snapshot(
-            snapshot_name_or_path=snapshot_name_or_path,
-            history_path=history_path,
-            future_path=future_path,
             output_path=output_path,
         )
 

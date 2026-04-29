@@ -10,11 +10,13 @@ import yaml
 
 from pjm_forecast.config import load_config
 from pjm_forecast.models.epftoolbox_wrappers import _dnn_trials_filename
+from pjm_forecast.models.epftoolbox_wrappers import LEARModel
 from pjm_forecast.models.nhits import NHITSModel
 from pjm_forecast.models.nbeatsx import AsinhQuantileScaler, NBEATSxModel, ZScoreScaler
 from pjm_forecast.models.registry import build_model
 from pjm_forecast.prepared_data import FeatureSchema
 from pjm_forecast.models.seasonal_naive import SeasonalNaiveModel
+from pjm_forecast.models.tree_quantile import LightGBMQuantileModel, XGBoostQuantileModel
 
 
 def test_seasonal_naive_uses_requested_lag() -> None:
@@ -95,12 +97,14 @@ def test_nbeatsx_resolves_ensemble_members_without_mutating_config() -> None:
     assert model.ensemble_members == [{"seed_offset": 0}, {"seed_offset": 5, "input_size": 168}]
 
 
-def test_build_model_can_disable_nbeatsx_ensemble() -> None:
+def test_build_model_can_disable_promoted_nhits_ensemble() -> None:
     config = load_config("configs/pjm_day_ahead_current_processed.yaml")
     schema = FeatureSchema(config)
-    default_model = build_model(config, "nbeatsx", seed=7)
-    single_model = build_model(config, "nbeatsx", seed=7, disable_ensemble=True)
-    assert len(default_model.ensemble_members) == 2
+    model_name = "nhits_tail_grid_weighted_main"
+    default_model = build_model(config, model_name, seed=7)
+    single_model = build_model(config, model_name, seed=7, disable_ensemble=True)
+    assert isinstance(default_model, NHITSModel)
+    assert len(default_model.ensemble_members) == 1
     assert single_model.ensemble_members == []
     assert default_model.h == config.prediction_horizon
     assert default_model.freq == config.prediction_freq
@@ -108,7 +112,9 @@ def test_build_model_can_disable_nbeatsx_ensemble() -> None:
     assert default_model.exog_scaler == "zscore"
     assert default_model.loss_name == "huber_mqloss"
     assert default_model.loss_delta == 0.75
+    assert default_model.monotonicity_penalty == 0.03
     assert 0.5 in default_model.quantiles
+    assert default_model.quantiles[-3:] == [0.975, 0.99, 0.995]
     assert default_model.futr_exog_list == schema.nbeatsx_futr_exog_columns()
     assert default_model.hist_exog_list == schema.nbeatsx_hist_exog_columns()
     assert default_model.protected_exog_columns == schema.nbeatsx_protected_exog_columns()
@@ -304,6 +310,98 @@ def test_nhits_accepts_quantile_configuration() -> None:
     assert model.quantile_weights == [1.0, 1.0, 3.0]
     assert model.quantile_deltas == [1.25, 0.75, 1.25]
     assert model.monotonicity_penalty == 0.05
+
+
+def test_lightgbm_quantile_model_emits_expected_quantile_grid() -> None:
+    model = LightGBMQuantileModel(
+        feature_columns=["system_load_forecast", "zonal_load_forecast", "price_lag_24"],
+        quantiles=[0.1, 0.5, 0.9],
+        random_seed=7,
+        model_params={"n_estimators": 8, "learning_rate": 0.1, "num_leaves": 15},
+    )
+    train = pd.DataFrame(
+        {
+            "ds": pd.date_range("2020-01-01 00:00:00", periods=64, freq="h"),
+            "y": np.linspace(10.0, 30.0, 64),
+            "system_load_forecast": np.linspace(100.0, 200.0, 64),
+            "zonal_load_forecast": np.linspace(80.0, 140.0, 64),
+            "price_lag_24": np.linspace(9.0, 29.0, 64),
+        }
+    )
+    future = train.tail(8).copy()
+
+    model.fit(train)
+    predictions = model.predict(history_df=train, future_df=future)
+
+    assert sorted(predictions["quantile"].dropna().unique().tolist()) == [0.1, 0.5, 0.9]
+    assert len(predictions) == len(future) * 3
+    assert predictions["y_pred"].notna().all()
+
+
+def test_build_model_supports_tree_quantile_variants(tmp_path: Path) -> None:
+    payload = yaml.safe_load(Path("configs/pjm_day_ahead_v1.yaml").read_text(encoding="utf-8"))
+    payload["models"]["lightgbm_q"] = {
+        "type": "lightgbm_quantile",
+        "loss_name": "mqloss",
+        "quantiles": [0.1, 0.5, 0.9],
+        "n_estimators": 8,
+        "learning_rate": 0.1,
+        "num_leaves": 15,
+    }
+    payload["models"]["xgboost_q"] = {
+        "type": "xgboost_quantile",
+        "loss_name": "mqloss",
+        "quantiles": [0.1, 0.5, 0.9],
+        "n_estimators": 8,
+        "learning_rate": 0.1,
+        "max_depth": 3,
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    config = load_config(config_path)
+
+    lightgbm_model = build_model(config, "lightgbm_q", seed=7)
+    xgboost_model = build_model(config, "xgboost_q", seed=7)
+
+    assert isinstance(lightgbm_model, LightGBMQuantileModel)
+    assert isinstance(xgboost_model, XGBoostQuantileModel)
+    assert lightgbm_model.quantiles == [0.1, 0.5, 0.9]
+    assert xgboost_model.quantiles == [0.1, 0.5, 0.9]
+    assert "price_lag_24" in lightgbm_model.feature_columns
+    assert "zonal_load_forecast" in xgboost_model.feature_columns
+
+
+def test_lear_falls_back_to_linear_regression_when_recalibration_fails(monkeypatch) -> None:
+    model = LEARModel(calibration_window_days=14)
+
+    class StubLear:
+        def _build_and_split_XYs(self, *, df_train, df_test, date_test):
+            del df_train, df_test, date_test
+            x_train = np.arange(40.0).reshape(10, 4)
+            y_train = np.tile(np.linspace(10.0, 33.0, 24), (10, 1))
+            x_test = np.arange(4.0).reshape(1, 4)
+            return x_train, y_train, x_test
+
+        def recalibrate(self, Xtrain, Ytrain):
+            del Xtrain, Ytrain
+            raise ValueError("synthetic lars failure")
+
+    monkeypatch.setattr(model, "_model", StubLear())
+
+    available = pd.DataFrame(
+        {
+            "ds": pd.date_range("2020-01-01 00:00:00", periods=24 * 20, freq="h"),
+            "Price": np.linspace(1.0, 10.0, 24 * 20),
+            "Exogenous 1": np.linspace(20.0, 30.0, 24 * 20),
+            "Exogenous 2": np.linspace(40.0, 50.0, 24 * 20),
+        }
+    ).set_index("ds")
+
+    prediction = model._safe_recalibrate_predict(available_df=available, next_day=pd.Timestamp("2020-01-20 00:00:00"))
+
+    assert model.used_linear_fallback is True
+    assert prediction.shape == (24,)
+    assert np.isfinite(prediction).all()
 
 
 def test_nbeatsx_spike_stack_requires_spike_hours() -> None:

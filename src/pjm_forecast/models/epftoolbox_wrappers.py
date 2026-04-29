@@ -216,6 +216,7 @@ def _build_fallback_dnn(
 class LEARModel(ForecastModel):
     calibration_window_days: int
     name: str = "lear"
+    used_linear_fallback: bool = False
 
     def __post_init__(self) -> None:
         try:
@@ -234,7 +235,12 @@ class LEARModel(ForecastModel):
             date_test=next_day,
         )
 
-        self._model.recalibrate(Xtrain=x_train, Ytrain=y_train)
+        try:
+            self._model.recalibrate(Xtrain=x_train, Ytrain=y_train)
+        except ValueError:
+            self.used_linear_fallback = True
+            return self._linear_fallback_predict(x_train=x_train, y_train=y_train, x_test=x_test)
+
         y_pred = np.zeros(24, dtype=float)
         x_no_dummies = self._model.scalerX.transform(x_test[:, :-7])
         x_test = x_test.copy()
@@ -247,6 +253,17 @@ class LEARModel(ForecastModel):
         y_pred = self._model.scalerY.inverse_transform(y_pred.reshape(1, -1))
         return np.asarray(y_pred).reshape(-1)
 
+    def _linear_fallback_predict(self, *, x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray) -> np.ndarray:
+        from sklearn.linear_model import Ridge
+
+        y_pred = np.zeros(24, dtype=float)
+        for hour in range(24):
+            model = Ridge(alpha=1.0)
+            model.fit(x_train, y_train[:, hour])
+            prediction = model.predict(x_test)
+            y_pred[hour] = float(np.asarray(prediction).reshape(-1)[0])
+        return y_pred
+
     def fit(self, train_df: pd.DataFrame) -> None:
         self._latest_train = train_df.copy()
 
@@ -257,7 +274,15 @@ class LEARModel(ForecastModel):
         return pd.DataFrame({"ds": future_df["ds"].to_numpy(), "y_pred": prediction})
 
     def save(self, path: Path) -> None:
-        path.write_text(json.dumps({"calibration_window_days": self.calibration_window_days}), encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "calibration_window_days": self.calibration_window_days,
+                    "used_linear_fallback": self.used_linear_fallback,
+                }
+            ),
+            encoding="utf-8",
+        )
 
     @classmethod
     def load(cls, path: Path) -> "LEARModel":

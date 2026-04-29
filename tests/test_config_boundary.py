@@ -16,14 +16,17 @@ def _write_variant(tmp_path: Path, *, mutate) -> Path:
     return config_path
 
 
-def test_shipped_configs_resolve_nbeatsx_runtime_contract() -> None:
+def test_shipped_configs_resolve_primary_neuralforecast_runtime_contract() -> None:
     for config_path in [
         Path("configs/pjm_day_ahead_v1.yaml"),
         Path("configs/pjm_day_ahead_kaggle.yaml"),
         Path("configs/pjm_day_ahead_current_processed.yaml"),
     ]:
         config = load_config(config_path)
-        runtime = config.nbeatsx_runtime_config()
+        model_name = next(
+            name for name, model_cfg in config.models.items() if str(model_cfg.get("type", "")).lower() in {"nbeatsx", "nhits"}
+        )
+        runtime = config.runtime_model_config(model_name)
         assert config.target_column == "y"
         assert runtime["h"] == config.prediction_horizon
         assert runtime["freq"] == config.prediction_freq

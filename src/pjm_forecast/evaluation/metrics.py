@@ -28,6 +28,12 @@ UPPER_TAIL_MISS_METRICS = [
     "daily_max_q99_gap_max",
 ]
 
+MEDIAN_DIAGNOSTIC_METRICS = [
+    "q50_mae",
+    "q50_bias_mean",
+    "q50_bias_median",
+]
+
 
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(np.abs(y_true - y_pred)))
@@ -65,6 +71,8 @@ def compute_quantile_diagnostics(predictions: pd.DataFrame) -> dict[str, float |
             diagnostics[f"{label}_slope_mean"] = float("nan")
         for metric_name in UPPER_TAIL_MISS_METRICS:
             diagnostics[metric_name] = float("nan")
+        for metric_name in MEDIAN_DIAGNOSTIC_METRICS:
+            diagnostics[metric_name] = float("nan")
         return diagnostics
 
     quantile_predictions = predictions.copy()
@@ -84,6 +92,7 @@ def compute_quantile_diagnostics(predictions: pd.DataFrame) -> dict[str, float |
     )
     diagnostics["crps"] = mean_crps_from_quantile_predictions(quantile_predictions)
     diagnostics.update(summarize_pit(quantile_predictions))
+    diagnostics.update(_compute_median_diagnostics(prediction_grid, y_true))
 
     for label, (lower, upper) in QUANTILE_INTERVALS.items():
         lower_column = _resolve_quantile_column(prediction_grid.columns, lower)
@@ -168,4 +177,19 @@ def _compute_upper_tail_diagnostics(prediction_grid: pd.DataFrame, y_true: pd.Se
     daily_max_gap = daily_maxima["y"] - daily_maxima["q99"]
     diagnostics["daily_max_q99_gap_mean"] = float(daily_max_gap.mean())
     diagnostics["daily_max_q99_gap_max"] = float(daily_max_gap.max())
+    return diagnostics
+
+
+def _compute_median_diagnostics(prediction_grid: pd.DataFrame, y_true: pd.Series) -> dict[str, float]:
+    diagnostics: dict[str, float] = {}
+    q50_column = _resolve_quantile_column(prediction_grid.columns, 0.5)
+    if q50_column is None:
+        return {metric_name: float("nan") for metric_name in MEDIAN_DIAGNOSTIC_METRICS}
+
+    aligned_y = y_true.reindex(prediction_grid.index).astype(float)
+    q50 = prediction_grid[q50_column].astype(float)
+    residual = aligned_y - q50
+    diagnostics["q50_mae"] = float(residual.abs().mean())
+    diagnostics["q50_bias_mean"] = float(residual.mean())
+    diagnostics["q50_bias_median"] = float(residual.median())
     return diagnostics

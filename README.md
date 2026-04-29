@@ -16,12 +16,12 @@ This config uses:
 - `official_weather_ready` as the dataset source
 - `2021-01-01` to `2026-03-31` hourly data
 - Open-Meteo historical forecast weather features
-- `NBEATSx` as the active benchmark model
+- `NHITS` dense upper-tail quantile training as the active benchmark model
 
-Current probabilistic experiments are tracked separately from the canonical
-config. As of the latest experiment notes, `NHITS 600` is the strongest
-probabilistic structure candidate, with `NBEATSx 600` retained as the main
-baseline for comparison.
+The promoted mainline model is `nhits_tail_grid_weighted_main`. It uses a dense
+upper-tail quantile grid through `q0.995`, weighted Huber multi-quantile loss,
+and hourly CQR calibration. `spike_score` is retained as postprocess diagnostic
+context but is not used as the promoted CQR grouping key.
 
 ## Environment
 
@@ -47,35 +47,52 @@ uv pip install git+https://github.com/jeslago/epftoolbox.git
 
 ## Canonical Workflow
 
-Prepare processed data:
+The canonical closure pipeline is the wrapper below. Run validation first, then
+test:
+
+```powershell
+uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split validation
+uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+```
+
+After backtesting, the wrapper stage order is:
+
+1. evaluate
+2. audit event-risk tail overlay
+3. finalize quality flow
+4. export report assets
+5. export model snapshot
+
+The wrapper writes:
+
+- predictions under `artifacts_current/predictions/`
+- metrics under `artifacts_current/metrics/`
+- event-risk audit artifacts under `artifacts_current/metrics/{split}_event_risk_tail_overlay/`
+- report exports under `artifacts_current/report/`
+- model snapshot under `artifacts_current/models/nhits_tail_grid_weighted_main_snapshot/`
+- run manifest under `artifacts_current/metrics/{split}_run_manifest.json`
+
+Individual stages can still be run for targeted reruns. Prepare processed data:
 
 ```powershell
 uv run python scripts\prepare_data.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
-Tune `NBEATSx`:
+Tune the model named by `tuning.model_name`:
 
 ```powershell
-uv run python scripts\tune_nbeatsx.py --config configs\pjm_day_ahead_current_processed.yaml
+uv run python scripts\tune_model.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
-Run backtest:
+Run backtest and closure stages:
 
 ```powershell
 uv run python scripts\backtest_all_models.py --config configs\pjm_day_ahead_current_processed.yaml --split test
-```
-
-Evaluate and export assets:
-
-```powershell
 uv run python scripts\evaluate_and_plot.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\audit_event_risk_overlay.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\finalize_quality_flow.py --config configs\pjm_day_ahead_current_processed.yaml --split test
 uv run python scripts\export_report_assets.py --config configs\pjm_day_ahead_current_processed.yaml --split test
-```
-
-Or run the pipeline wrapper:
-
-```powershell
-uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+uv run python scripts\ops\export_model_snapshot.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
 ## Data Contracts
@@ -83,10 +100,19 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - Timestamps stay in timezone-naive local time. Do not remap to UTC in v1.
 - Calendar features are derived from the `ds` local hourly sequence. Do not mix
   UTC-remapped timestamps into feature, split, lag, or forecast-window logic.
+- Forecast issue-time and feature availability rules are documented in
+  `docs/protocol/forecast_issue_time.md` and
+  `docs/protocol/feature_availability_matrix.md`.
 - Canonical panel columns include `unique_id`, `ds`, `y`, and configured future exogenous signals.
-- `NBEATSx` uses:
+- NeuralForecast models (`NBEATSx`/`NHITS`) use:
   - future exogenous signals plus calendar columns as `futr_exog`
   - price lags plus configured lagged signal columns as `hist_exog`
+- Canonical `spike_score` is derived into the feature store with rolling-safe
+  historical percentile scoring for calibration context. It is not included in
+  the promoted NHITS model's `futr_exog`.
+- Postprocessing supports validation-fitted q50 bias correction before CQR.
+  It remains disabled in the canonical config until it beats CQR-only metrics
+  on validation/test.
 
 ## Experiment Layout
 
@@ -95,14 +121,25 @@ uv run python scripts\run_pipeline.py --config configs\pjm_day_ahead_current_pro
 - `configs/experiments/` contains reproducible experiment branches. Keep these
   config-driven and avoid changing canonical behavior unless an experiment has
   been promoted.
+- `docs/experiments/2026-04-26-execution-plan.md` is the locked execution plan
+  for the next prediction-quality phases. Follow its experiment order and
+  promotion gates before expanding scope.
 - `scripts/inject_prediction_context.py` can copy existing prediction parquet
   files into a new prediction directory while joining context columns from the
   configured feature store by `ds`. Use it for postprocess-only branches that
   reuse a baseline model body but need calibration context such as
-  `spike_score`.
+  `spike_score`; the canonical backtest writes configured `spike_score`
+  diagnostic context directly.
+- `scripts/experiments/evaluate_hour_x_regime_grid.py` compares `hour_cqr`
+  against candidate `hour_x_regime` thresholds on existing validation/test
+  prediction parquet files without retraining.
 - `docs/experiments/` records small human-readable summaries for experiment
   decisions. Generated prediction, metrics, plot, and scenario artifacts remain
   under `artifacts*` directories and should not be treated as source of truth.
+- Evaluation writes `{split}_regime_metrics.csv` and
+  `{split}_spike_score_diagnostics.csv` alongside scalar metrics and quantile
+  diagnostics so P50, upper-tail behavior, and spike-context coverage can be
+  reviewed before promotion.
 
 ## Splits
 

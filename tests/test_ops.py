@@ -7,6 +7,112 @@ import pandas as pd
 from pjm_forecast import ops
 
 
+def test_export_configured_model_snapshot_uses_tuning_model_and_default_snapshot_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    expected = tmp_path / "artifacts" / "models" / "lear_snapshot"
+
+    class StubConfig:
+        tuning = {"model_name": "lear"}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+
+    class StubWorkspace:
+        config = StubConfig()
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str | None = None) -> Path:
+            captured["called"] = True
+            captured["model_name"] = model_name
+            captured["snapshot_name"] = snapshot_name
+            return expected
+
+    def _fake_open(config_path: str) -> StubWorkspace:
+        captured["config_path"] = config_path
+        return StubWorkspace()
+
+    monkeypatch.setattr("pjm_forecast.ops.Workspace.open", _fake_open)
+
+    output = ops.export_configured_model_snapshot("configs/pjm_day_ahead_v1.yaml")
+
+    assert captured["config_path"] == "configs/pjm_day_ahead_v1.yaml"
+    assert captured["called"] is True
+    assert captured["model_name"] == "lear"
+    assert captured["snapshot_name"] == "lear_snapshot"
+    assert output == expected
+
+
+def test_export_configured_model_snapshot_falls_back_to_benchmark_model_and_default_snapshot_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    expected = tmp_path / "artifacts" / "models" / "seasonal_naive_snapshot"
+
+    class StubConfig:
+        tuning: dict[str, str] = {}
+        backtest = {"benchmark_models": ["seasonal_naive", "lear"]}
+
+    class StubWorkspace:
+        config = StubConfig()
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str | None = None) -> Path:
+            captured["called"] = True
+            captured["model_name"] = model_name
+            captured["snapshot_name"] = snapshot_name
+            return expected
+
+    def _fake_open(config_path: str) -> StubWorkspace:
+        captured["config_path"] = config_path
+        return StubWorkspace()
+
+    monkeypatch.setattr("pjm_forecast.ops.Workspace.open", _fake_open)
+
+    output = ops.export_configured_model_snapshot("configs/pjm_day_ahead_v1.yaml")
+
+    assert captured["config_path"] == "configs/pjm_day_ahead_v1.yaml"
+    assert captured["called"] is True
+    assert captured["model_name"] == "seasonal_naive"
+    assert captured["snapshot_name"] == "seasonal_naive_snapshot"
+    assert output == expected
+
+
+def test_export_configured_model_snapshot_falls_back_when_tuning_property_raises_key_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    expected = tmp_path / "artifacts" / "models" / "seasonal_naive_snapshot"
+
+    class StubConfig:
+        raw: dict[str, object] = {}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+
+        @property
+        def tuning(self) -> dict[str, str]:
+            raise KeyError("tuning")
+
+    class StubWorkspace:
+        config = StubConfig()
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str | None = None) -> Path:
+            captured["called"] = True
+            captured["model_name"] = model_name
+            captured["snapshot_name"] = snapshot_name
+            return expected
+
+    def _fake_open(config_path: str) -> StubWorkspace:
+        captured["config_path"] = config_path
+        return StubWorkspace()
+
+    monkeypatch.setattr("pjm_forecast.ops.Workspace.open", _fake_open)
+
+    output = ops.export_configured_model_snapshot("configs/pjm_day_ahead_v1.yaml")
+
+    assert captured["config_path"] == "configs/pjm_day_ahead_v1.yaml"
+    assert captured["called"] is True
+    assert captured["model_name"] == "seasonal_naive"
+    assert captured["snapshot_name"] == "seasonal_naive_snapshot"
+    assert output == expected
+
+
 def test_export_nbeatsx_snapshot_delegates_to_workspace(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
     expected = tmp_path / "artifacts" / "models" / "nbeatsx_snapshot"

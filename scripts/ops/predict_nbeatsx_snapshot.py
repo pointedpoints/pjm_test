@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 
-from pjm_forecast.ops import predict_nbeatsx_snapshot
+from pjm_forecast.ops import predict_model_snapshot
 
 
 def run_predict_nbeatsx_snapshot(snapshot_path: str, history_path: str, future_path: str, output_path: str) -> None:
-    predict_nbeatsx_snapshot(snapshot_path, history_path, future_path, output_path)
+    predict_model_snapshot(snapshot_path, history_path, future_path, output_path)
     print(f"Wrote predictions to {output_path}")
 
 

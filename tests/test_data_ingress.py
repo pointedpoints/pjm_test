@@ -62,7 +62,9 @@ def test_prepare_dataset_handles_official_weather_ready_source_with_weather_enri
     assert result.weather_df is not None
     assert len(result.prepared.panel_df) == 24 * 40
     assert "weather_cloud_cover_mean" in result.prepared.panel_df.columns
-    assert "weather_cloud_cover_mean_lag_24" in result.prepared.feature_df.columns
+    assert "weather_cloud_cover_mean" in result.prepared.feature_df.columns
+    assert "weather_cloud_cover_mean_lag_24" not in result.prepared.feature_df.columns
+    assert "spike_score" in result.prepared.feature_df.columns
     assert result.prepared.panel_df["ds"].min() == pd.Timestamp("2024-01-01 00:00:00")
 
 

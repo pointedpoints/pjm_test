@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import yaml
 
 from pjm_forecast.data.ingress import PreparedDataResult
 from pjm_forecast.models.base import ForecastModel
-from pjm_forecast.pipeline import STAGE_ORDER
+from pjm_forecast.pipeline import STAGE_ORDER, _run_audit_event_risk_overlay, _run_export_model_snapshot
 from pjm_forecast.prepared_data import PreparedDataset
 from pjm_forecast.workspace import Workspace, resolve_mlp_unit_search_options
 
@@ -94,6 +95,28 @@ def _write_temp_config(tmp_path: Path, csv_path: Path, *, with_weather: bool = F
     return config_path
 
 
+def _quantile_prediction_frame(split: str) -> pd.DataFrame:
+    rows = []
+    for day, spike_score in [("2026-01-01", 0.2), ("2026-01-02", 0.95)]:
+        for hour in [0, 19]:
+            ds = pd.Timestamp(day) + pd.Timedelta(hours=hour)
+            for quantile, y_pred in [(0.5, 95.0), (0.95, 100.0), (0.99, 105.0), (0.995, 110.0)]:
+                rows.append(
+                    {
+                        "ds": ds,
+                        "y": 120.0 if spike_score > 0.9 else 100.0,
+                        "y_pred": y_pred,
+                        "quantile": quantile,
+                        "model": "nhits_tail_grid_weighted_main",
+                        "split": split,
+                        "seed": 7,
+                        "metadata": "{}",
+                        "spike_score": spike_score,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: Path) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path)
@@ -106,22 +129,320 @@ def test_workspace_open_respects_root_override_and_artifact_contract(tmp_path: P
     assert workspace.artifacts.quantile_diagnostics("test") == (
         tmp_path / "run" / "artifacts" / "metrics" / "test_quantile_diagnostics.csv"
     ).resolve()
+    assert workspace.artifacts.spike_score_diagnostics("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_spike_score_diagnostics.csv"
+    ).resolve()
     assert workspace.artifacts.scenario_diagnostics("test") == (
         tmp_path / "run" / "artifacts" / "metrics" / "test_scenario_diagnostics.csv"
+    ).resolve()
+    assert workspace.artifacts.event_risk_audit_dir("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_event_risk_tail_overlay"
+    ).resolve()
+    assert workspace.artifacts.quality_gate_summary("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_quality_gate_summary.csv"
+    ).resolve()
+    assert workspace.artifacts.run_manifest("test") == (
+        tmp_path / "run" / "artifacts" / "metrics" / "test_run_manifest.json"
     ).resolve()
     assert workspace.artifacts.snapshot_manifest("nbeatsx_snapshot") == (
         tmp_path / "run" / "artifacts" / "models" / "nbeatsx_snapshot" / "manifest.json"
     ).resolve()
 
 
-def test_pipeline_stage_order_excludes_retrieval() -> None:
+def test_workspace_audit_event_risk_overlay_writes_expected_files(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["backtest"]["benchmark_models"] = ["nhits_tail_grid_weighted_main"]
+    workspace.config.raw["models"]["nhits_tail_grid_weighted_main"] = {"type": "nhits"}
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "monotonic": True,
+        "calibration": {
+            "enabled": True,
+            "source_split": "validation",
+            "method": "cqr_asymmetric",
+            "group_by": "hour",
+            "min_group_size": 1,
+        },
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "validation",
+            "risk_score_column": "spike_score",
+            "risk_aggregation": "mean",
+            "risk_threshold_quantile": 0.50,
+            "residual_quantile": 1.0,
+            "max_uplift": 25.0,
+            "target_quantiles": [0.99, 0.995],
+            "validation_holdout_days": 1,
+        },
+    }
+
+    for split in ["validation", "test"]:
+        path = workspace.artifacts.prediction("nhits_tail_grid_weighted_main", split, 7)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _quantile_prediction_frame(split).to_parquet(path, index=False)
+
+    output_dir = workspace.audit_event_risk_overlay("test")
+
+    assert (output_dir / "overlay_implementation_audit.json").exists()
+    assert (output_dir / "spike_score_audit.json").exists()
+    assert (output_dir / "width_by_regime.csv").exists()
+
+
+def test_workspace_finalize_quality_flow_writes_summary_and_manifest(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+
+    workspace.artifacts.metrics("test").parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "model": "seasonal_naive",
+                "seed": 7,
+                "mae": 18.5,
+                "pinball": 2.25,
+            }
+        ]
+    ).to_csv(workspace.artifacts.metrics("test"), index=False)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "post_crossing_rate": 0.0,
+                "post_q99_exceedance_rate": 0.025,
+                "post_q99_excess_mean": 1.5,
+                "post_worst_q99_underprediction": 12.0,
+                "post_width_98": 105.2,
+            }
+        ]
+    ).to_csv(workspace.artifacts.quantile_diagnostics("test"), index=False)
+    event_audit_dir = workspace.artifacts.event_risk_audit_dir("test")
+    event_audit_dir.mkdir(parents=True, exist_ok=True)
+    (event_audit_dir / "overlay_implementation_audit.json").write_text(
+        json.dumps({"selected_variant": "hour_cqr"}),
+        encoding="utf-8",
+    )
+    (event_audit_dir / "spike_score_audit.json").write_text(
+        json.dumps({"availability_status": "PASS"}),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {"regime": "all", "before_width_98": 100.0, "after_width_98": 105.2},
+            {"regime": "normal", "before_width_98": 100.0, "after_width_98": 105.2},
+        ]
+    ).to_csv(event_audit_dir / "width_by_regime.csv", index=False)
+
+    written = workspace.finalize_quality_flow("test")
+
+    assert written == [
+        workspace.artifacts.quality_gate_summary("test"),
+        workspace.artifacts.run_manifest("test"),
+    ]
+    assert workspace.artifacts.quality_gate_summary("test").exists()
+    assert workspace.artifacts.run_manifest("test").exists()
+    manifest = json.loads(workspace.artifacts.run_manifest("test").read_text(encoding="utf-8"))
+    artifact_paths = [item["path"] for item in manifest["artifacts"]]
+    assert str(event_audit_dir / "overlay_implementation_audit.json") in artifact_paths
+    assert str(event_audit_dir / "spike_score_audit.json") in artifact_paths
+    assert str(event_audit_dir / "width_by_regime.csv") in artifact_paths
+    copied = workspace.export_report("test")
+    assert workspace.artifacts.report_asset("test_quality_gate_summary.csv") in copied
+    assert workspace.artifacts.report_asset("test_run_manifest.json") in copied
+
+
+def test_workspace_finalize_quality_flow_writes_manifest_when_required_artifact_is_missing(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+
+    workspace.artifacts.metrics("test").parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "run": "seasonal_naive_seed_7",
+                "post_crossing_rate": 0.0,
+                "post_q99_exceedance_rate": 0.025,
+            }
+        ]
+    ).to_csv(workspace.artifacts.quantile_diagnostics("test"), index=False)
+
+    with pytest.raises(FileNotFoundError):
+        workspace.finalize_quality_flow("test")
+
+    assert workspace.artifacts.run_manifest("test").exists()
+    manifest = json.loads(workspace.artifacts.run_manifest("test").read_text(encoding="utf-8"))
+    artifacts = {item["path"]: item for item in manifest["artifacts"]}
+    assert artifacts[str(workspace.artifacts.metrics("test"))]["exists"] is False
+    assert artifacts[str(workspace.artifacts.quality_gate_summary("test"))]["exists"] is False
+
+
+def test_workspace_audit_event_risk_overlay_rejects_non_validation_source_split(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "test",
+        },
+    }
+
+    with pytest.raises(ValueError, match="event-risk audit must use validation source_split"):
+        workspace.audit_event_risk_overlay("test")
+
+
+@pytest.mark.parametrize(
+    "postprocess_config",
+    [
+        ["not-a-mapping"],
+        {"event_risk_tail_overlay": ["not-a-mapping"]},
+    ],
+)
+def test_workspace_audit_event_risk_overlay_rejects_malformed_event_config(
+    tmp_path: Path,
+    postprocess_config: object,
+) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = postprocess_config
+
+    with pytest.raises(ValueError, match="report.quantile_postprocess"):
+        workspace.audit_event_risk_overlay("test")
+
+
+def test_workspace_audit_event_risk_overlay_rejects_malformed_calibration_config(tmp_path: Path) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["report"]["quantile_postprocess"] = {
+        "calibration": [],
+        "event_risk_tail_overlay": {
+            "enabled": True,
+            "source_split": "validation",
+        },
+    }
+
+    with pytest.raises(ValueError, match="report.quantile_postprocess.calibration"):
+        workspace.audit_event_risk_overlay("test")
+
+
+def test_pipeline_stage_order_includes_quality_closure() -> None:
     assert STAGE_ORDER == [
         "prepare_data",
-        "tune_nbeatsx",
+        "tune_model",
         "backtest_all_models",
         "evaluate_and_plot",
+        "audit_event_risk_overlay",
+        "finalize_quality_flow",
         "export_report_assets",
+        "export_model_snapshot",
     ]
+
+
+def test_pipeline_audit_event_risk_overlay_skips_when_overlay_disabled() -> None:
+    class Config:
+        raw = {"report": {"quantile_postprocess": {"event_risk_tail_overlay": {"enabled": False}}}}
+
+    class WorkspaceStub:
+        config = Config()
+        audit_calls = 0
+
+        def audit_event_risk_overlay(self, split: str) -> None:
+            del split
+            self.audit_calls += 1
+
+    workspace = WorkspaceStub()
+
+    _run_audit_event_risk_overlay(workspace, "test")
+
+    assert workspace.audit_calls == 0
+
+
+def test_pipeline_audit_event_risk_overlay_runs_when_overlay_enabled() -> None:
+    class Config:
+        raw = {"report": {"quantile_postprocess": {"event_risk_tail_overlay": {"enabled": True}}}}
+
+    class WorkspaceStub:
+        config = Config()
+        audit_calls: list[str]
+
+        def __init__(self) -> None:
+            self.audit_calls = []
+
+        def audit_event_risk_overlay(self, split: str) -> None:
+            self.audit_calls.append(split)
+
+    workspace = WorkspaceStub()
+
+    _run_audit_event_risk_overlay(workspace, "test")
+
+    assert workspace.audit_calls == ["test"]
+
+
+def test_pipeline_export_model_snapshot_uses_tuning_model_and_skips_existing_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "nhits_candidate_snapshot" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{}", encoding="utf-8")
+
+    class Config:
+        tuning = {"model_name": "nhits_candidate"}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+        models = {
+            "nhits_candidate": {"type": "nhits"},
+            "seasonal_naive": {"type": "seasonal_naive"},
+        }
+
+    class Artifacts:
+        def snapshot_manifest(self, snapshot_name: str) -> Path:
+            assert snapshot_name == "nhits_candidate_snapshot"
+            return manifest_path
+
+    class WorkspaceStub:
+        config = Config()
+        artifacts = Artifacts()
+        exports: list[tuple[str, str]]
+
+        def __init__(self) -> None:
+            self.exports = []
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str) -> None:
+            self.exports.append((model_name, snapshot_name))
+
+    workspace = WorkspaceStub()
+
+    _run_export_model_snapshot(workspace, "test")
+
+    assert workspace.exports == []
+
+
+def test_pipeline_export_model_snapshot_ignores_non_neural_model(tmp_path: Path) -> None:
+    class Config:
+        tuning = {}
+        backtest = {"benchmark_models": ["seasonal_naive"]}
+        models = {"seasonal_naive": {"type": "seasonal_naive"}}
+
+    class Artifacts:
+        def snapshot_manifest(self, snapshot_name: str) -> Path:
+            return tmp_path / snapshot_name / "manifest.json"
+
+    class WorkspaceStub:
+        config = Config()
+        artifacts = Artifacts()
+        exports = 0
+
+        def export_model_snapshot(self, *, model_name: str, snapshot_name: str) -> None:
+            del model_name, snapshot_name
+            self.exports += 1
+
+    workspace = WorkspaceStub()
+
+    _run_export_model_snapshot(workspace, "test")
+
+    assert workspace.exports == 0
 
 
 def test_resolve_mlp_unit_search_options_prefers_configured_values() -> None:
@@ -131,6 +452,48 @@ def test_resolve_mlp_unit_search_options_prefers_configured_values() -> None:
         }
     }
     assert resolve_mlp_unit_search_options(tuning_cfg) == ["256x256", "384x384"]
+
+
+def test_workspace_build_model_applies_named_nhits_best_params(tmp_path: Path, monkeypatch) -> None:
+    csv_path = _write_csv(tmp_path)
+    config_path = _write_temp_config(tmp_path, csv_path)
+    workspace = Workspace.open(config_path)
+    workspace.config.raw["models"]["nhits_candidate"] = {
+        "type": "nhits",
+        "h": 24,
+        "input_size": 168,
+        "max_steps": 10,
+        "learning_rate": 0.001,
+        "batch_size": 16,
+        "dropout_prob_theta": 0.0,
+        "scaler_type": "identity",
+        "stack_types": ["identity", "identity", "identity"],
+        "mlp_units": [[256, 256], [256, 256], [256, 256]],
+        "loss_name": "huber_mqloss",
+        "loss_delta": 0.75,
+        "quantiles": [0.1, 0.5, 0.9],
+    }
+    workspace.artifacts.best_params("nhits_candidate").parent.mkdir(parents=True, exist_ok=True)
+    workspace.artifacts.best_params("nhits_candidate").write_text(
+        json.dumps({"input_size": 336, "mlp_units": "768x768"}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_raw_build_model(model_name: str, *, seed=None, disable_ensemble: bool = False):
+        del seed, disable_ensemble
+        captured["model_name"] = model_name
+        captured["model_cfg"] = dict(workspace.config.models[model_name])
+        return SnapshotStubModel()
+
+    monkeypatch.setattr(workspace, "_raw_build_model", _fake_raw_build_model)
+
+    workspace.build_model("nhits_candidate")
+
+    assert captured["model_name"] == "nhits_candidate"
+    assert captured["model_cfg"]["input_size"] == 336
+    assert captured["model_cfg"]["mlp_units"] == [[768, 768], [768, 768], [768, 768]]
 
 
 def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Path) -> None:
@@ -165,15 +528,18 @@ def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Pat
     assert workspace.artifacts.prediction("seasonal_naive", "test", 7).exists()
     assert workspace.artifacts.metrics("test").exists()
     assert workspace.artifacts.quantile_diagnostics("test").exists()
+    assert workspace.artifacts.spike_score_diagnostics("test").exists()
     assert workspace.artifacts.scenario_diagnostics("test").exists()
     assert workspace.artifacts.dm("test").exists()
     assert workspace.artifacts.hourly_mae_plot("test").exists()
     assert workspace.artifacts.high_vol_week_plot("test").exists()
     assert workspace.artifacts.report_asset("test_metrics.csv") in copied
     assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in copied
+    assert workspace.artifacts.report_asset("test_spike_score_diagnostics.csv") in copied
     assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in copied
     assert workspace.artifacts.report_asset("test_metrics.csv") in rebuilt
     assert workspace.artifacts.report_asset("test_quantile_diagnostics.csv") in rebuilt
+    assert workspace.artifacts.report_asset("test_spike_score_diagnostics.csv") in rebuilt
     assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in rebuilt
 
 
@@ -274,7 +640,7 @@ def test_workspace_export_nbeatsx_snapshot_fits_and_saves_model(tmp_path: Path, 
     assert stub_model.fit_rows == workspace.config.backtest["rolling_window_days"] * 24
 
 
-def test_workspace_predict_nbeatsx_snapshot_writes_prediction_file(tmp_path: Path, monkeypatch) -> None:
+def test_workspace_predict_model_snapshot_writes_prediction_file(tmp_path: Path, monkeypatch) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path)
     workspace = Workspace.open(config_path)
@@ -295,7 +661,7 @@ def test_workspace_predict_nbeatsx_snapshot_writes_prediction_file(tmp_path: Pat
     stub_model = SnapshotStubModel()
     monkeypatch.setattr(type(workspace.models), "load_snapshot", lambda self, snapshot_name_or_path: stub_model)
 
-    written_path = workspace.predict_nbeatsx_snapshot(
+    written_path = workspace.predict_model_snapshot(
         snapshot_name_or_path=tmp_path / "snapshot",
         history_path=history_path,
         future_path=future_path,

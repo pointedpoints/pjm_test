@@ -132,6 +132,11 @@ class FeatureSchema:
                 if source != self.config.target_column and source not in dependencies:
                     dependencies.append(source)
                 continue
+            if kind == "future_known_lag":
+                source = str(spec.get("source", self.config.target_column))
+                if source not in dependencies:
+                    dependencies.append(source)
+                continue
             if kind == "spike_score":
                 for input_item in spec.get("inputs", []):
                     source = str(input_item["source"])
@@ -191,9 +196,6 @@ class FeatureSchema:
                 columns.append(f"{source_column}_lag_{lag}")
         return columns
 
-    def load_lag_columns(self) -> list[str]:
-        return self.source_lag_columns()
-
     def feature_columns(self) -> list[str]:
         return [
             *self.panel_columns(),
@@ -225,9 +227,6 @@ class FeatureSchema:
             protected_exog_columns=self.nbeatsx_protected_exog_columns(),
         )
 
-    def retrieval_price_columns(self) -> list[str]:
-        return [self.config.target_column]
-
     def retrieval_load_columns(self) -> list[str]:
         return self.future_exog_columns()
 
@@ -237,12 +236,6 @@ class FeatureSchema:
             if column_name in DEFAULT_RETRIEVAL_CALENDAR_BASES:
                 columns.extend([f"{column_name}_sin", f"{column_name}_cos"])
         return columns
-
-    def retrieval_feature_columns(self) -> list[str]:
-        return [*self.retrieval_price_columns(), *self.retrieval_load_columns(), *self.retrieval_calendar_columns()]
-
-    def epftoolbox_alias_map(self) -> dict[str, str]:
-        return dict(EPF_ALIAS_MAP)
 
     def prediction_columns(self) -> list[str]:
         return list(PREDICTION_COLUMNS)
@@ -338,6 +331,11 @@ class FeatureSchema:
                 source = str(spec.get("source", self.config.target_column))
                 stat = str(spec["stat"])
                 feature_df[name] = self._prior_day_price_stat(feature_df, source=source, stat=stat)
+                continue
+            if kind == "future_known_lag":
+                source = str(spec.get("source", self.config.target_column))
+                lag = int(spec["lag"])
+                feature_df[name] = feature_df[source].shift(lag).fillna(0.0).astype(float)
                 continue
             if kind == "spike_score":
                 feature_df[name] = self._spike_score(feature_df, spec)
@@ -516,7 +514,7 @@ class FeatureSchema:
             source = str(input_item["source"])
             weight = float(input_item.get("weight", 1.0))
             direction = str(input_item.get("direction", "positive"))
-            ranked = feature_df[source].astype(float).rank(pct=True, method="average").fillna(0.5)
+            ranked = self._historical_percentile_score(feature_df[source].astype(float))
             if direction == "negative":
                 ranked = 1.0 - ranked
             score = score + weight * ranked
@@ -524,6 +522,42 @@ class FeatureSchema:
         if total_weight <= 0.0:
             raise ValueError(f"spike_score {spec.get('name')!r} requires positive total weight.")
         return (score / total_weight).clip(lower=0.0, upper=1.0).astype(float)
+
+    @staticmethod
+    def _historical_percentile_score(values: pd.Series) -> pd.Series:
+        raw = values.to_numpy(dtype=float)
+        valid = raw[~np.isnan(raw)]
+        if valid.size == 0:
+            return pd.Series(0.5, index=values.index, dtype=float)
+
+        unique_values = np.unique(valid)
+        tree = np.zeros(len(unique_values) + 1, dtype=int)
+
+        def add(position: int) -> None:
+            cursor = position + 1
+            while cursor < len(tree):
+                tree[cursor] += 1
+                cursor += cursor & -cursor
+
+        def prefix_sum(position: int) -> int:
+            total = 0
+            cursor = position + 1
+            while cursor > 0:
+                total += int(tree[cursor])
+                cursor -= cursor & -cursor
+            return total
+
+        scores = np.full(len(raw), 0.5, dtype=float)
+        seen = 0
+        for idx, value in enumerate(raw):
+            if np.isnan(value):
+                continue
+            position = int(np.searchsorted(unique_values, value, side="right") - 1)
+            if seen > 0:
+                scores[idx] = prefix_sum(position) / seen
+            add(position)
+            seen += 1
+        return pd.Series(scores, index=values.index, dtype=float)
 
 
 @dataclass(frozen=True)

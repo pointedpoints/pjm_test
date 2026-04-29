@@ -6,7 +6,7 @@ from pjm_forecast.workspace import Workspace
 
 
 def run_tune_nbeatsx(config_path: str) -> None:
-    Workspace.open(config_path).tune_nbeatsx()
+    Workspace.open(config_path).tune_model()
 
 
 def main() -> None:

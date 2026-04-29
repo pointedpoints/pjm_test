@@ -109,11 +109,12 @@ def test_feature_schema_exposes_model_column_groups() -> None:
     assert "zonal_load_forecast_lag_168" in hist_columns
 
 
-def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals() -> None:
+def test_current_processed_nhits_exogenous_contract_uses_minimal_hist_signals_and_hidden_spike_context() -> None:
     config = load_config(Path("configs/pjm_day_ahead_current_processed.yaml"))
     schema = FeatureSchema(config)
     contract = schema.nbeatsx_exogenous_contract()
 
+    assert config.backtest["benchmark_models"] == ["nhits_tail_grid_weighted_main"]
     assert "system_load_forecast" not in contract.signal_futr_exog_columns
     assert "system_load_forecast_lag_24" not in contract.hist_exog_columns
     assert "zonal_load_forecast" in contract.signal_futr_exog_columns
@@ -128,6 +129,10 @@ def test_current_processed_nbeatsx_exogenous_contract_uses_minimal_hist_signals(
     assert "price_lag_168" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_24" not in contract.hist_exog_columns
     assert "weather_temp_spread_lag_168" not in contract.hist_exog_columns
+    assert "prior_day_price_max_ramp" not in contract.signal_futr_exog_columns
+    assert "spike_score" not in contract.signal_futr_exog_columns
+    assert "prior_day_price_max_ramp" in schema.feature_columns()
+    assert "spike_score" in schema.feature_columns()
     assert contract.future_only_signal_columns() == [
         "weather_temp_mean",
         "weather_temp_spread",
@@ -315,6 +320,33 @@ def test_feature_schema_builds_prior_day_price_stat_features(tmp_path: Path) -> 
     assert "prior_day_price_spread" in prepared.schema.nbeatsx_futr_exog_columns()
 
 
+def test_feature_schema_builds_future_known_price_lag_features(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: (
+            payload["features"]["future_exog"].append("future_price_lag_168"),
+            payload["features"].setdefault("derived_features", []).append(
+                {
+                    "kind": "future_known_lag",
+                    "source": "y",
+                    "lag": 168,
+                    "name": "future_price_lag_168",
+                }
+            ),
+        ),
+    )
+    config = load_config(config_path)
+    csv_path = _write_csv(tmp_path, hours=24 * 1000)
+    prepared = PreparedDataset.from_source(config, csv_path)
+
+    assert "future_price_lag_168" in prepared.feature_df.columns
+    assert "future_price_lag_168" in prepared.schema.nbeatsx_futr_exog_columns()
+    assert "future_price_lag_168" not in prepared.schema.nbeatsx_hist_exog_columns()
+    assert prepared.feature_df["future_price_lag_168"].iloc[0] == 0.0
+    assert prepared.feature_df["future_price_lag_168"].iloc[168] == 0.0
+    assert prepared.feature_df["future_price_lag_168"].iloc[169] == 1.0
+
+
 def test_feature_schema_builds_spike_score_feature(tmp_path: Path) -> None:
     config_path = _write_temp_config(
         tmp_path,
@@ -343,6 +375,32 @@ def test_feature_schema_builds_spike_score_feature(tmp_path: Path) -> None:
     assert "spike_score" in prepared.schema.nbeatsx_futr_exog_columns()
     assert prepared.feature_df["spike_score"].between(0.0, 1.0).all()
     assert prepared.feature_df["spike_score"].iloc[-1] > prepared.feature_df["spike_score"].iloc[0]
+
+
+def test_spike_score_is_stable_when_future_values_are_appended(tmp_path: Path) -> None:
+    config_path = _write_temp_config(
+        tmp_path,
+        lambda payload: payload["features"].__setitem__(
+            "derived_features",
+            [
+                {
+                    "kind": "spike_score",
+                    "name": "spike_score",
+                    "inputs": [{"source": "zonal_load_forecast", "weight": 1.0}],
+                }
+            ],
+        ),
+    )
+    config = load_config(config_path)
+    prefix_panel = _build_panel("2024-01-01 00:00:00", hours=48)
+    full_panel = _build_panel("2024-01-01 00:00:00", hours=72)
+    full_panel.loc[48:, "zonal_load_forecast"] = 99_999.0
+
+    schema = FeatureSchema(config)
+    prefix_scores = schema.build_feature_frame(prefix_panel)["spike_score"]
+    full_scores = schema.build_feature_frame(full_panel)["spike_score"].iloc[:48]
+
+    pd.testing.assert_series_equal(prefix_scores.reset_index(drop=True), full_scores.reset_index(drop=True))
 
 
 def test_feature_schema_builds_pre_holiday_features() -> None:

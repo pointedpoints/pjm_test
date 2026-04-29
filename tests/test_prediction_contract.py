@@ -225,6 +225,9 @@ def test_compute_quantile_diagnostics_reports_crossing_coverage_and_width() -> N
     assert diagnostics["crps"] > 0.0
     assert 0.0 <= diagnostics["pit_mean"] <= 1.0
     assert diagnostics["pit_variance"] >= 0.0
+    assert diagnostics["q50_mae"] == 0.0
+    assert diagnostics["q50_bias_mean"] == 0.0
+    assert diagnostics["q50_bias_median"] == 0.0
     assert diagnostics["q95_q99_gap_mean"] == 1.0
     assert diagnostics["q95_q99_slope_mean"] == pytest.approx(25.0)
     assert diagnostics["q99_q995_gap_mean"] == 1.0
@@ -256,6 +259,8 @@ def test_compute_quantile_diagnostics_returns_na_for_point_predictions() -> None
     assert np.isnan(diagnostics["width_98"])
     assert np.isnan(diagnostics["crps"])
     assert np.isnan(diagnostics["pit_mean"])
+    assert np.isnan(diagnostics["q50_mae"])
+    assert np.isnan(diagnostics["q50_bias_mean"])
     assert np.isnan(diagnostics["q95_q99_gap_mean"])
     assert np.isnan(diagnostics["q99_exceedance_rate"])
 
