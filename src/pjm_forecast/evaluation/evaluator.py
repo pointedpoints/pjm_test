@@ -11,8 +11,11 @@ from .event_risk_tail_overlay import apply_event_risk_tail_overlay, fit_event_ri
 from .metrics import compute_metrics, compute_quantile_diagnostics
 from .regime_metrics import compute_regime_metrics
 from .reporting import plot_high_volatility_week, plot_hourly_mae
+from .relative_error import compute_relative_error_diagnostics
 from .scenarios import compute_scenario_diagnostics
+from .scorecard import build_experiment_scorecard_row
 from .spike_score_diagnostics import compute_spike_score_diagnostics
+from .tail_regime import compute_tail_regime_diagnostics
 from pjm_forecast.prediction_contract import point_prediction_view, quantile_values
 from pjm_forecast.quantile_postprocess import postprocess_quantile_predictions
 
@@ -57,6 +60,12 @@ class _ArtifactStoreLike(Protocol):
     def write_regime_metrics(self, split: str, regime_metrics_df: pd.DataFrame) -> Path: ...
 
     def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
+
+    def write_relative_error(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
+
+    def write_tail_regime_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
+
+    def write_experiment_scorecard(self, split: str, scorecard_df: pd.DataFrame) -> Path: ...
 
     def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
@@ -296,6 +305,64 @@ class Evaluator:
         diagnostics_df = pd.DataFrame(rows).sort_values(["model", "seed", "run"]).reset_index(drop=True)
         self.artifacts.write_spike_score_diagnostics(bundle.split, diagnostics_df)
         return diagnostics_df
+
+    def compute_relative_error(self, bundle: EvaluationBundle) -> pd.DataFrame:
+        rows = []
+        for run in bundle.runs:
+            diagnostics = compute_relative_error_diagnostics(run.frame)
+            diagnostics.insert(0, "seed", run.seed)
+            diagnostics.insert(0, "model", run.model)
+            diagnostics.insert(0, "run", run.name)
+            rows.append(diagnostics)
+        diagnostics_df = pd.concat(rows, axis=0, ignore_index=True) if rows else pd.DataFrame()
+        if not diagnostics_df.empty:
+            diagnostics_df = diagnostics_df.sort_values(["model", "seed", "run", "slice_type", "slice"]).reset_index(drop=True)
+        self.artifacts.write_relative_error(bundle.split, diagnostics_df)
+        return diagnostics_df
+
+    def compute_tail_regime_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
+        rows = []
+        for run in bundle.runs:
+            diagnostics = compute_tail_regime_diagnostics(run.frame)
+            diagnostics.insert(0, "seed", run.seed)
+            diagnostics.insert(0, "model", run.model)
+            diagnostics.insert(0, "run", run.name)
+            rows.append(diagnostics)
+        diagnostics_df = pd.concat(rows, axis=0, ignore_index=True) if rows else pd.DataFrame()
+        if not diagnostics_df.empty:
+            diagnostics_df = diagnostics_df.sort_values(["model", "seed", "run", "regime"]).reset_index(drop=True)
+        self.artifacts.write_tail_regime_diagnostics(bundle.split, diagnostics_df)
+        return diagnostics_df
+
+    def compute_experiment_scorecard(
+        self,
+        bundle: EvaluationBundle,
+        metrics_df: pd.DataFrame,
+        relative_error_df: pd.DataFrame,
+        tail_regime_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        rows = []
+        for run in bundle.runs:
+            metric_match = metrics_df.loc[metrics_df["run"].eq(run.name)]
+            metrics = metric_match.iloc[0].to_dict() if not metric_match.empty else {}
+            relative_error = relative_error_df.loc[relative_error_df["run"].eq(run.name)] if not relative_error_df.empty else pd.DataFrame()
+            tail_regime = tail_regime_df.loc[tail_regime_df["run"].eq(run.name)] if not tail_regime_df.empty else pd.DataFrame()
+            rows.append(
+                build_experiment_scorecard_row(
+                    run_name=run.name,
+                    model=run.model,
+                    seed=run.seed,
+                    metrics=metrics,
+                    relative_error=relative_error,
+                    tail_regime=tail_regime,
+                )
+            )
+        scorecard_df = pd.DataFrame(rows)
+        primary_metric = "pinball" if "pinball" in scorecard_df.columns else "mae"
+        if primary_metric in scorecard_df.columns:
+            scorecard_df = scorecard_df.sort_values([primary_metric, "model", "seed", "run"]).reset_index(drop=True)
+        self.artifacts.write_experiment_scorecard(bundle.split, scorecard_df)
+        return scorecard_df
 
     def compute_scenario_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
         scenario_cfg = self.schema.config.report.get("scenario_evaluation", {})

@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pandas as pd
 
+from pjm_forecast.evaluation.evaluator import EvaluationBundle, Evaluator, LoadedPredictionRun
 from pjm_forecast.evaluation.scorecard import build_experiment_scorecard_row
 from pjm_forecast.workspace import ArtifactStore
 
@@ -98,3 +99,79 @@ def test_scorecard_row_pulls_normal_and_tail_slices() -> None:
     assert row["q50_wape_20_30"] == 0.25
     assert row["q99_coverage_gt_p99"] == 0.636
     assert row["q99_excess_mean_gt_p99"] == 33.0
+
+
+def test_evaluator_writes_scorecard_artifacts() -> None:
+    artifacts = _CapturingArtifacts()
+    evaluator = Evaluator(schema=object(), artifacts=artifacts)
+    bundle = EvaluationBundle(
+        split="test",
+        runs=[
+            LoadedPredictionRun(
+                name="nhits_test_seed7",
+                path=Path("nhits_test_seed7.parquet"),
+                model="nhits",
+                split="test",
+                seed=7,
+                variant=None,
+                raw_frame=_prediction_frame(),
+                frame=_prediction_frame(),
+            )
+        ],
+    )
+
+    metrics = evaluator.compute_metrics(bundle)
+    relative_error = evaluator.compute_relative_error(bundle)
+    tail_regime = evaluator.compute_tail_regime_diagnostics(bundle)
+    scorecard = evaluator.compute_experiment_scorecard(bundle, metrics, relative_error, tail_regime)
+
+    assert set(artifacts.written) == {"metrics", "relative_error", "tail_regime", "scorecard"}
+    assert artifacts.written["relative_error"].loc[0, "run"] == "nhits_test_seed7"
+    assert artifacts.written["tail_regime"].loc[0, "run"] == "nhits_test_seed7"
+    assert scorecard.loc[0, "q50_wape_all"] > 0
+    assert scorecard.loc[0, "q99_coverage_all"] <= 1.0
+
+
+def _prediction_frame() -> pd.DataFrame:
+    timestamps = pd.date_range("2026-01-01", periods=4, freq="h")
+    rows = []
+    for quantile, predictions in [
+        (0.50, [11.0, 17.0, 24.0, 70.0]),
+        (0.99, [14.0, 23.0, 28.0, 80.0]),
+        (0.995, [15.0, 24.0, 29.0, 81.0]),
+    ]:
+        for ds, actual, prediction in zip(timestamps, [10.0, 20.0, 30.0, 100.0], predictions, strict=True):
+            rows.append(
+                {
+                    "ds": ds,
+                    "y": actual,
+                    "y_pred": prediction,
+                    "model": "nhits",
+                    "split": "test",
+                    "seed": 7,
+                    "quantile": quantile,
+                    "metadata": "{}",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+class _CapturingArtifacts:
+    def __init__(self) -> None:
+        self.written: dict[str, pd.DataFrame] = {}
+
+    def write_metrics(self, split: str, metrics_df: pd.DataFrame) -> Path:
+        self.written["metrics"] = metrics_df
+        return Path(f"{split}_metrics.csv")
+
+    def write_relative_error(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        self.written["relative_error"] = diagnostics_df
+        return Path(f"{split}_relative_error.csv")
+
+    def write_tail_regime_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        self.written["tail_regime"] = diagnostics_df
+        return Path(f"{split}_tail_regime_diagnostics.csv")
+
+    def write_experiment_scorecard(self, split: str, scorecard_df: pd.DataFrame) -> Path:
+        self.written["scorecard"] = scorecard_df
+        return Path(f"{split}_experiment_scorecard.csv")

@@ -272,6 +272,9 @@ class ArtifactStore:
             self.quantile_diagnostics(split),
             self.regime_metrics(split),
             self.spike_score_diagnostics(split),
+            self.relative_error(split),
+            self.tail_regime_diagnostics(split),
+            self.experiment_scorecard(split),
             self.scenario_diagnostics(split),
             self.dm(split),
             self.quality_gate_summary(split),
@@ -549,6 +552,9 @@ class Workspace:
         evaluator.compute_quantile_diagnostics(bundle)
         evaluator.compute_regime_metrics(bundle)
         evaluator.compute_spike_score_diagnostics(bundle)
+        relative_error_df = evaluator.compute_relative_error(bundle)
+        tail_regime_df = evaluator.compute_tail_regime_diagnostics(bundle)
+        evaluator.compute_experiment_scorecard(bundle, metrics_df, relative_error_df, tail_regime_df)
         evaluator.compute_scenario_diagnostics(bundle)
         evaluator.compute_dm(bundle)
         evaluator.render_plots(bundle, metrics_df, split)
