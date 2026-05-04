@@ -17,6 +17,7 @@ from .regime_metrics import compute_regime_metrics
 from .relative_error import compute_relative_error_diagnostics
 from .scenarios import compute_scenario_diagnostics
 from .spike_score_diagnostics import compute_spike_score_diagnostics
+from .tail_regime import compute_daily_peak_tail_gap, compute_tail_regime_diagnostics
 from .tail_tradeoff import compute_width_adjusted_tail_tradeoff
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "QualityMetrics",
     "apply_event_risk_tail_overlay",
     "build_event_risk_tail_overlay_audit_artifacts",
+    "compute_daily_peak_tail_gap",
     "compute_hourly_mae",
     "compute_metrics",
     "compute_quantile_diagnostics",
@@ -40,6 +42,7 @@ __all__ = [
     "compute_relative_error_diagnostics",
     "compute_scenario_diagnostics",
     "compute_spike_score_diagnostics",
+    "compute_tail_regime_diagnostics",
     "compute_width_adjusted_tail_tradeoff",
     "dm_test",
     "evaluate_event_risk_tail_overlay_grid",
