@@ -16,6 +16,7 @@ from .config import ProjectConfig, load_config
 from .data import prepare_dataset
 from .evaluation import build_event_risk_tail_overlay_audit_artifacts, compute_metrics
 from .evaluation.evaluator import Evaluator
+from .evaluation.spike_filter_diagnostics import compute_retrain_spike_filter_diagnostics
 from .model_io import load_model_snapshot, save_model_snapshot_bundle, validate_model_prediction_output
 from .models import build_model as build_forecast_model
 from .models.base import ForecastModel
@@ -24,6 +25,7 @@ from .prepared_data import FeatureSchema, PreparedDataset
 from .quality_flow import build_quality_gate_summary, build_run_manifest, write_json
 from .retrieval import RetrievalParams
 from .retrieval.runner import RetrievalRunner
+from .spike_filter import SpikeFilterConfig
 SplitName = Literal["validation", "test"]
 
 
@@ -99,6 +101,9 @@ class ArtifactStore:
     def spike_score_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_spike_score_diagnostics.csv"
 
+    def spike_filter_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_spike_filter_diagnostics.csv"
+
     def relative_error(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_relative_error.csv"
 
@@ -164,6 +169,12 @@ class ArtifactStore:
 
     def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
         output_path = self.spike_score_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_spike_filter_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.spike_filter_diagnostics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         diagnostics_df.to_csv(output_path, index=False)
         return output_path
@@ -272,6 +283,7 @@ class ArtifactStore:
             self.quantile_diagnostics(split),
             self.regime_metrics(split),
             self.spike_score_diagnostics(split),
+            self.spike_filter_diagnostics(split),
             self.relative_error(split),
             self.tail_regime_diagnostics(split),
             self.experiment_scorecard(split),
@@ -563,6 +575,16 @@ class Workspace:
     def export_report(self, split: SplitName = "test") -> list[Path]:
         return self.artifacts.export_report_bundle(split)
 
+    def compute_spike_filter_diagnostics(self, split: SplitName = "validation") -> Path:
+        diagnostics = compute_retrain_spike_filter_diagnostics(
+            feature_df=self.feature_frame(),
+            forecast_days=self.split_days(split),
+            rolling_window_days=int(self.config.backtest["rolling_window_days"]),
+            retrain_weekday=int(self.config.backtest["retrain_weekday"]),
+            filter_config=self._spike_filter_config(),
+        )
+        return self.artifacts.write_spike_filter_diagnostics(split, diagnostics)
+
     def finalize_quality_flow(self, split: SplitName = "test") -> list[Path]:
         model_name = str(self.config.backtest["benchmark_models"][0])
         seed = int(self.config.project["benchmark_seed"])
@@ -674,6 +696,21 @@ class Workspace:
                 continue
             return [str(item.get("source")) for item in feature.get("inputs", []) if item.get("source")]
         return []
+
+    def _spike_filter_config(self) -> SpikeFilterConfig:
+        target_filter_cfg: Mapping[str, object] = {}
+        for model_cfg in self.config.models.values():
+            configured = model_cfg.get("target_filter", {}) if isinstance(model_cfg, Mapping) else {}
+            if isinstance(configured, Mapping) and bool(configured.get("enabled", False)):
+                target_filter_cfg = configured
+                break
+        return SpikeFilterConfig(
+            window_observations=int(target_filter_cfg.get("window_observations", 365)),
+            min_history=int(target_filter_cfg.get("min_history", 60)),
+            quantile=float(target_filter_cfg.get("quantile", 0.95)),
+            fallback_quantile=float(target_filter_cfg.get("fallback_quantile", 0.975)),
+            iqr_multiplier=float(target_filter_cfg.get("iqr_multiplier", 3.0)),
+        )
 
     def export_model_snapshot(self, model_name: str = "nbeatsx", snapshot_name: str | None = None) -> Path:
         window_days = self.config.backtest["rolling_window_days"]
