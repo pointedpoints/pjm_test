@@ -16,6 +16,7 @@ from .quality_gate import QualityDecision, QualityGateResult, QualityMetrics, ev
 from .regime_metrics import compute_regime_metrics
 from .relative_error import compute_relative_error_diagnostics
 from .scenarios import compute_scenario_diagnostics
+from .scorecard import build_experiment_scorecard_row
 from .spike_score_diagnostics import compute_spike_score_diagnostics
 from .tail_regime import compute_daily_peak_tail_gap, compute_tail_regime_diagnostics
 from .tail_tradeoff import compute_width_adjusted_tail_tradeoff
@@ -33,6 +34,7 @@ __all__ = [
     "QualityGateResult",
     "QualityMetrics",
     "apply_event_risk_tail_overlay",
+    "build_experiment_scorecard_row",
     "build_event_risk_tail_overlay_audit_artifacts",
     "compute_daily_peak_tail_gap",
     "compute_hourly_mae",
