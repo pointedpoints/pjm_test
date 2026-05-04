@@ -14,6 +14,7 @@ from .median_bias_grid import MedianBiasGridResult, evaluate_median_bias_grid
 from .metrics import compute_hourly_mae, compute_metrics, compute_quantile_diagnostics
 from .quality_gate import QualityDecision, QualityGateResult, QualityMetrics, evaluate_quality_gate
 from .regime_metrics import compute_regime_metrics
+from .relative_error import compute_relative_error_diagnostics
 from .scenarios import compute_scenario_diagnostics
 from .spike_score_diagnostics import compute_spike_score_diagnostics
 from .tail_tradeoff import compute_width_adjusted_tail_tradeoff
@@ -36,6 +37,7 @@ __all__ = [
     "compute_metrics",
     "compute_quantile_diagnostics",
     "compute_regime_metrics",
+    "compute_relative_error_diagnostics",
     "compute_scenario_diagnostics",
     "compute_spike_score_diagnostics",
     "compute_width_adjusted_tail_tradeoff",
