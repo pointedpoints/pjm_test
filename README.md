@@ -95,6 +95,44 @@ uv run python scripts\export_report_assets.py --config configs\pjm_day_ahead_cur
 uv run python scripts\ops\export_model_snapshot.py --config configs\pjm_day_ahead_current_processed.yaml
 ```
 
+### COMED scorecard diagnostics
+
+The evaluation stage writes additional scorecard artifacts for COMED model comparison:
+
+- `artifacts_current/metrics/test_relative_error.csv`
+- `artifacts_current/metrics/test_tail_regime_diagnostics.csv`
+- `artifacts_current/metrics/test_experiment_scorecard.csv`
+
+These files separate normal-price q50 relative error from upper-tail event risk.
+The intended first comparison set is:
+
+- `seasonal_naive`
+- `lear`
+- `lightgbm_quantile`
+- `xgboost_quantile`
+- `nhits_tail_grid_weighted_main`
+
+Run evaluation on existing predictions:
+
+```powershell
+uv run python scripts\evaluate_and_plot.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+```
+
+Run the baseline helper on existing predictions:
+
+```powershell
+uv run python scripts\experiments\scorecard_baselines.py --config configs\pjm_day_ahead_current_processed.yaml --split test
+```
+
+Run configured baseline backtests and then evaluate:
+
+```powershell
+uv run python scripts\experiments\scorecard_baselines.py --config configs\pjm_day_ahead_current_processed.yaml --split test --run-backtest
+```
+
+Use `test_experiment_scorecard.csv` for promotion decisions. Do not promote a
+candidate from global pinball, MAE, sMAPE, or coverage alone.
+
 ## Data Contracts
 
 - Timestamps stay in timezone-naive local time. Do not remap to UTC in v1.
