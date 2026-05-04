@@ -102,6 +102,35 @@ def test_scorecard_row_pulls_normal_and_tail_slices() -> None:
     assert row["q99_excess_mean_gt_p99"] == 33.0
 
 
+def test_scorecard_row_allows_baseline_without_tail_quantiles() -> None:
+    relative = pd.DataFrame(
+        [
+            {
+                "slice_type": "all",
+                "slice": "all",
+                "wape": 0.20,
+                "smape": 0.30,
+                "median_ape": 0.10,
+                "p75_ape": 0.25,
+                "p90_ape": 0.50,
+            }
+        ]
+    )
+
+    row = build_experiment_scorecard_row(
+        run_name="lightgbm_q_validation_seed7",
+        model="lightgbm_q",
+        seed=7,
+        metrics={"mae": 9.0, "rmse": 18.0, "smape": 20.0, "pinball": 2.5},
+        relative_error=relative,
+        tail_regime=pd.DataFrame(),
+    )
+
+    assert row["run"] == "lightgbm_q_validation_seed7"
+    assert row["q50_wape_all"] == 0.20
+    assert "q99_coverage_all" not in row
+
+
 def test_evaluator_writes_scorecard_artifacts() -> None:
     artifacts = _CapturingArtifacts()
     evaluator = Evaluator(schema=object(), artifacts=artifacts)

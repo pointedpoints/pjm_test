@@ -29,6 +29,8 @@ def build_experiment_scorecard_row(
 
 def _relative_fields(relative_error: pd.DataFrame) -> dict[str, float]:
     fields: dict[str, float] = {}
+    if relative_error.empty or not {"slice_type", "slice"}.issubset(relative_error.columns):
+        return fields
     mapping = {
         ("all", "all"): "all",
         ("actual_price_bin", "10-20"): "10_20",
@@ -51,6 +53,8 @@ def _relative_fields(relative_error: pd.DataFrame) -> dict[str, float]:
 
 def _tail_fields(tail_regime: pd.DataFrame) -> dict[str, float]:
     fields: dict[str, float] = {}
+    if tail_regime.empty or "regime" not in tail_regime.columns:
+        return fields
     mapping = {
         "all": "all",
         "actual_p95_p99": "p95_p99",
