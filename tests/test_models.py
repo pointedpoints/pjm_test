@@ -404,6 +404,62 @@ def test_lear_falls_back_to_linear_regression_when_recalibration_fails(monkeypat
     assert np.isfinite(prediction).all()
 
 
+def test_lear_falls_back_when_lasso_prediction_is_unstable(monkeypatch) -> None:
+    model = LEARModel(calibration_window_days=14)
+
+    class IdentityScaler:
+        def transform(self, values):
+            return values
+
+        def inverse_transform(self, values):
+            return values
+
+    class ExplodingHourModel:
+        def __init__(self, hour: int) -> None:
+            self.hour = hour
+
+        def predict(self, x_test):
+            del x_test
+            if self.hour == 12:
+                return np.array([100_000.0])
+            return np.array([20.0 + self.hour])
+
+    class StubLear:
+        def __init__(self) -> None:
+            self.scalerX = IdentityScaler()
+            self.scalerY = IdentityScaler()
+            self.models = {}
+
+        def _build_and_split_XYs(self, *, df_train, df_test, date_test):
+            del df_train, df_test, date_test
+            x_train = np.tile(np.arange(12.0), (40, 1))
+            y_train = np.tile(np.linspace(10.0, 33.0, 24), (40, 1))
+            x_test = np.arange(12.0).reshape(1, 12)
+            return x_train, y_train, x_test
+
+        def recalibrate(self, Xtrain, Ytrain):
+            del Xtrain, Ytrain
+            self.models = {hour: ExplodingHourModel(hour) for hour in range(24)}
+
+    monkeypatch.setattr(model, "_model", StubLear())
+
+    available = pd.DataFrame(
+        {
+            "ds": pd.date_range("2020-01-01 00:00:00", periods=24 * 20, freq="h"),
+            "Price": np.linspace(1.0, 10.0, 24 * 20),
+            "Exogenous 1": np.linspace(20.0, 30.0, 24 * 20),
+            "Exogenous 2": np.linspace(40.0, 50.0, 24 * 20),
+        }
+    ).set_index("ds")
+
+    prediction = model._safe_recalibrate_predict(available_df=available, next_day=pd.Timestamp("2020-01-20 00:00:00"))
+
+    assert model.used_linear_fallback is True
+    assert prediction.shape == (24,)
+    assert np.isfinite(prediction).all()
+    assert prediction[12] < 100_000.0
+
+
 def test_nbeatsx_spike_stack_requires_spike_hours() -> None:
     with pytest.raises(ValueError, match="spike_hours"):
         NBEATSxModel(

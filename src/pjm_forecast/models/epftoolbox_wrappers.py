@@ -234,12 +234,15 @@ class LEARModel(ForecastModel):
             df_test=df_test,
             date_test=next_day,
         )
+        x_train_raw = x_train.copy()
+        y_train_raw = y_train.copy()
+        x_test_raw = x_test.copy()
 
         try:
             self._model.recalibrate(Xtrain=x_train, Ytrain=y_train)
         except ValueError:
             self.used_linear_fallback = True
-            return self._linear_fallback_predict(x_train=x_train, y_train=y_train, x_test=x_test)
+            return self._linear_fallback_predict(x_train=x_train_raw, y_train=y_train_raw, x_test=x_test_raw)
 
         y_pred = np.zeros(24, dtype=float)
         x_no_dummies = self._model.scalerX.transform(x_test[:, :-7])
@@ -251,7 +254,23 @@ class LEARModel(ForecastModel):
             y_pred[hour] = float(np.asarray(prediction).reshape(-1)[0])
 
         y_pred = self._model.scalerY.inverse_transform(y_pred.reshape(1, -1))
-        return np.asarray(y_pred).reshape(-1)
+        prediction = np.asarray(y_pred, dtype=float).reshape(-1)
+        if self._prediction_is_unstable(prediction=prediction, y_train=y_train_raw):
+            self.used_linear_fallback = True
+            return self._linear_fallback_predict(x_train=x_train_raw, y_train=y_train_raw, x_test=x_test_raw)
+        return prediction
+
+    def _prediction_is_unstable(self, *, prediction: np.ndarray, y_train: np.ndarray) -> bool:
+        if prediction.shape != (24,) or not np.isfinite(prediction).all():
+            return True
+        finite_targets = np.asarray(y_train, dtype=float)
+        finite_targets = finite_targets[np.isfinite(finite_targets)]
+        if finite_targets.size == 0:
+            return True
+        q01, q25, q75, q99 = np.quantile(finite_targets, [0.01, 0.25, 0.75, 0.99])
+        iqr = max(float(q75 - q25), 1.0)
+        tolerance = max(1000.0, 25.0 * iqr)
+        return bool(prediction.min() < q01 - tolerance or prediction.max() > q99 + tolerance)
 
     def _linear_fallback_predict(self, *, x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray) -> np.ndarray:
         from sklearn.linear_model import Ridge
