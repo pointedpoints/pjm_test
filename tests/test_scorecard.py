@@ -6,6 +6,7 @@ import pandas as pd
 from pjm_forecast.evaluation.evaluator import EvaluationBundle, Evaluator, LoadedPredictionRun
 from pjm_forecast.evaluation.scorecard import build_experiment_scorecard_row
 from pjm_forecast.workspace import ArtifactStore
+from scripts.experiments.scorecard_baselines import baseline_model_names
 
 
 def test_artifact_store_writes_scorecard_outputs() -> None:
@@ -130,6 +131,17 @@ def test_evaluator_writes_scorecard_artifacts() -> None:
     assert artifacts.written["tail_regime"].loc[0, "run"] == "nhits_test_seed7"
     assert scorecard.loc[0, "q50_wape_all"] > 0
     assert scorecard.loc[0, "q99_coverage_all"] <= 1.0
+
+
+def test_baseline_model_names_are_defaulted_for_comed_scorecard() -> None:
+    assert baseline_model_names(None) == [
+        "seasonal_naive",
+        "lear",
+        "lightgbm_quantile",
+        "xgboost_quantile",
+        "nhits_tail_grid_weighted_main",
+    ]
+    assert baseline_model_names("a,b") == ["a", "b"]
 
 
 def _prediction_frame() -> pd.DataFrame:

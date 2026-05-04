@@ -516,12 +516,13 @@ class Workspace:
     def tune_nbeatsx(self) -> None:
         self.tune_model()
 
-    def backtest(self, split: SplitName = "test") -> None:
+    def backtest(self, split: SplitName = "test", model_names: list[str] | None = None) -> None:
         feature_df = self.feature_frame()
         split_boundaries = self.split_boundaries()
         forecast_days = get_daily_split_days(feature_df, split_boundaries, split_name=split)
+        benchmark_models = list(model_names) if model_names is not None else list(self.config.backtest["benchmark_models"])
 
-        for model_name in self.config.backtest["benchmark_models"]:
+        for model_name in benchmark_models:
             model_type = str(self.config.models[model_name].get("type", "")).lower()
             if model_type in {"nbeatsx", "nhits"}:
                 self.schema().validate_nbeatsx_feature_frame(feature_df)
