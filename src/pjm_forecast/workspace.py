@@ -99,6 +99,15 @@ class ArtifactStore:
     def spike_score_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_spike_score_diagnostics.csv"
 
+    def relative_error(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_relative_error.csv"
+
+    def tail_regime_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_tail_regime_diagnostics.csv"
+
+    def experiment_scorecard(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_experiment_scorecard.csv"
+
     def scenario_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_scenario_diagnostics.csv"
 
@@ -157,6 +166,24 @@ class ArtifactStore:
         output_path = self.spike_score_diagnostics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_relative_error(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.relative_error(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_tail_regime_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.tail_regime_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_experiment_scorecard(self, split: str, scorecard_df: pd.DataFrame) -> Path:
+        output_path = self.experiment_scorecard(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        scorecard_df.to_csv(output_path, index=False)
         return output_path
 
     def write_scenario_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
