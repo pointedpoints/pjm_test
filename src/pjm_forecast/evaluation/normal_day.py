@@ -158,7 +158,7 @@ def _summarize(
         "p90_ape": float(ape.quantile(0.90)),
         "smape": float(np.nanmean(smape_values)),
         "q50_mae": float(abs_error.mean()),
-        "q50_bias_mean": float(error.median()),
+        "q50_bias_mean": float(error.mean()),
         "actual_mean": float(y.mean()),
         "actual_median": float(y.median()),
     }
