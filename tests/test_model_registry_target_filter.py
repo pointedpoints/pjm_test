@@ -5,8 +5,32 @@ from pathlib import Path
 import yaml
 
 from pjm_forecast.config import ProjectConfig, load_config
+from pjm_forecast.models import registry as model_registry
 from pjm_forecast.models.registry import build_model
 from pjm_forecast.models.target_filter import SpikeFilteredTargetModel
+
+
+class _DummyNHITSModel:
+    name = "nhits"
+    supports_fitted_snapshot = True
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+    def fit(self, train_df) -> None:
+        del train_df
+
+    def predict(self, history_df, future_df):
+        del history_df, future_df
+        raise NotImplementedError
+
+    def save(self, path: Path) -> None:
+        del path
+
+    @classmethod
+    def load(cls, path: Path) -> "_DummyNHITSModel":
+        del path
+        return cls()
 
 
 def _config_with_filtered_lightgbm() -> ProjectConfig:
@@ -44,11 +68,17 @@ def test_registry_leaves_model_unwrapped_when_target_filter_is_absent() -> None:
     assert not isinstance(model, SpikeFilteredTargetModel)
 
 
-def test_nhits_normal_cap_experiment_wraps_nhits_model() -> None:
+def test_nhits_normal_cap_experiment_wraps_nhits_model(monkeypatch) -> None:
+    monkeypatch.setattr(model_registry, "NHITSModel", _DummyNHITSModel)
     config = load_config("configs/experiments/pjm_current_validation_nhits_normal_cap.yaml")
 
     model = build_model(config, "nhits_normal_cap", seed=7)
 
     assert isinstance(model, SpikeFilteredTargetModel)
+    assert isinstance(model.base_model, _DummyNHITSModel)
     assert model.filter_config.min_history == 60
     assert model.filter_config.window_observations == 365
+    assert config.resolve_path(config.dataset["local_csv_path"]) == Path(
+        "data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
+    ).resolve()
+    assert config.resolve_path(config.weather["cache_dir"]) == Path("data/raw/weather").resolve()

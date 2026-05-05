@@ -17,7 +17,7 @@ dataset:
   dataset_name: "PJM"
   unique_id: "PJM_COMED"
   source_url: "https://zenodo.org/records/4624805/files/PJM.csv"
-  local_csv_path: "data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
+  local_csv_path: "../data/raw/PJM_COMED_20210101_20260331_weather_ready.csv"
   source_filename: "PJM.csv"
   start_date: "2021-01-01"
   end_date: "2026-03-31"
@@ -89,7 +89,7 @@ weather:
   provider: "open_meteo_historical_forecast"
   model: "best_match"
   timezone: "America/Chicago"
-  cache_dir: "data/raw/weather"
+  cache_dir: "../data/raw/weather"
   precipitation_area_fraction_threshold_mm: 0.1
   output_columns:
     - "weather_temp_mean"
