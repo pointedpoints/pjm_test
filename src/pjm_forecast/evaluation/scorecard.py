@@ -12,6 +12,7 @@ def build_experiment_scorecard_row(
     metrics: dict[str, float],
     relative_error: pd.DataFrame,
     tail_regime: pd.DataFrame,
+    normal_day: pd.DataFrame | None = None,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "run": run_name,
@@ -24,6 +25,7 @@ def build_experiment_scorecard_row(
     }
     row.update(_relative_fields(relative_error))
     row.update(_tail_fields(tail_regime))
+    row.update(_normal_day_fields(normal_day if normal_day is not None else pd.DataFrame()))
     return row
 
 
@@ -70,3 +72,26 @@ def _tail_fields(tail_regime: pd.DataFrame) -> dict[str, float]:
         fields[f"q99_excess_mean_{suffix}"] = float(record.get("q99_excess_mean", np.nan))
         fields[f"q99_excess_max_{suffix}"] = float(record.get("q99_excess_max", np.nan))
     return fields
+
+
+def _normal_day_fields(normal_day: pd.DataFrame) -> dict[str, float]:
+    mapping = {
+        "actual_normal_day": "actual_normal_day",
+        "forecast_low_risk_day": "forecast_low_risk_day",
+    }
+    metrics = ["q50_wape", "median_ape", "p75_ape", "p90_ape", "smape"]
+    fields = {f"{prefix}_{metric}": float(np.nan) for prefix in mapping.values() for metric in metrics}
+    if normal_day.empty or "segment" not in normal_day.columns:
+        return fields
+    for segment, prefix in mapping.items():
+        match = normal_day.loc[normal_day["segment"].eq(segment)]
+        if match.empty:
+            continue
+        record = match.iloc[0]
+        for metric in metrics:
+            fields[f"{prefix}_{metric}"] = _as_float(record.get(metric, np.nan))
+    return fields
+
+
+def _as_float(value: object) -> float:
+    return float(np.nan) if pd.isna(value) else float(value)

@@ -376,6 +376,7 @@ class Evaluator:
         metrics_df: pd.DataFrame,
         relative_error_df: pd.DataFrame,
         tail_regime_df: pd.DataFrame,
+        normal_day_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         rows = []
         for run in bundle.runs:
@@ -383,6 +384,11 @@ class Evaluator:
             metrics = metric_match.iloc[0].to_dict() if not metric_match.empty else {}
             relative_error = relative_error_df.loc[relative_error_df["run"].eq(run.name)] if not relative_error_df.empty else pd.DataFrame()
             tail_regime = tail_regime_df.loc[tail_regime_df["run"].eq(run.name)] if not tail_regime_df.empty else pd.DataFrame()
+            normal_day = (
+                normal_day_df.loc[normal_day_df["run"].eq(run.name)]
+                if normal_day_df is not None and not normal_day_df.empty
+                else pd.DataFrame()
+            )
             rows.append(
                 build_experiment_scorecard_row(
                     run_name=run.name,
@@ -391,6 +397,7 @@ class Evaluator:
                     metrics=metrics,
                     relative_error=relative_error,
                     tail_regime=tail_regime,
+                    normal_day=normal_day,
                 )
             )
         scorecard_df = pd.DataFrame(rows)

@@ -133,6 +133,50 @@ def test_scorecard_row_allows_baseline_without_tail_quantiles() -> None:
     assert "q99_coverage_all" not in row
 
 
+def test_scorecard_row_pulls_normal_day_relative_error_fields() -> None:
+    normal_day = pd.DataFrame(
+        [
+            {
+                "segment": "actual_normal_day",
+                "q50_wape": 0.18,
+                "median_ape": 0.12,
+                "p75_ape": 0.24,
+                "p90_ape": 0.41,
+                "smape": 0.20,
+            },
+            {
+                "segment": "forecast_low_risk_day",
+                "q50_wape": 0.16,
+                "median_ape": 0.10,
+                "p75_ape": 0.22,
+                "p90_ape": 0.38,
+                "smape": 0.18,
+            },
+        ]
+    )
+
+    row = build_experiment_scorecard_row(
+        run_name="nhits_normal_cap_validation_seed7",
+        model="nhits_normal_cap",
+        seed=7,
+        metrics={"mae": 8.0, "rmse": 15.0, "smape": 25.0, "pinball": 2.8},
+        relative_error=pd.DataFrame(),
+        tail_regime=pd.DataFrame(),
+        normal_day=normal_day,
+    )
+
+    assert row["actual_normal_day_q50_wape"] == 0.18
+    assert row["actual_normal_day_median_ape"] == 0.12
+    assert row["actual_normal_day_p75_ape"] == 0.24
+    assert row["actual_normal_day_p90_ape"] == 0.41
+    assert row["actual_normal_day_smape"] == 0.20
+    assert row["forecast_low_risk_day_q50_wape"] == 0.16
+    assert row["forecast_low_risk_day_median_ape"] == 0.10
+    assert row["forecast_low_risk_day_p75_ape"] == 0.22
+    assert row["forecast_low_risk_day_p90_ape"] == 0.38
+    assert row["forecast_low_risk_day_smape"] == 0.18
+
+
 def test_evaluator_writes_scorecard_artifacts() -> None:
     artifacts = _CapturingArtifacts()
     evaluator = Evaluator(schema=object(), artifacts=artifacts)
@@ -156,7 +200,7 @@ def test_evaluator_writes_scorecard_artifacts() -> None:
     normal_day = evaluator.compute_normal_day_diagnostics(bundle)
     relative_error = evaluator.compute_relative_error(bundle)
     tail_regime = evaluator.compute_tail_regime_diagnostics(bundle)
-    scorecard = evaluator.compute_experiment_scorecard(bundle, metrics, relative_error, tail_regime)
+    scorecard = evaluator.compute_experiment_scorecard(bundle, metrics, relative_error, tail_regime, normal_day)
 
     assert set(artifacts.written) == {"metrics", "normal_day", "relative_error", "tail_regime", "scorecard"}
     assert artifacts.written["normal_day"].loc[0, "run"] == "nhits_test_seed7"
@@ -164,6 +208,7 @@ def test_evaluator_writes_scorecard_artifacts() -> None:
     assert artifacts.written["relative_error"].loc[0, "run"] == "nhits_test_seed7"
     assert artifacts.written["tail_regime"].loc[0, "run"] == "nhits_test_seed7"
     assert scorecard.loc[0, "q50_wape_all"] > 0
+    assert scorecard.loc[0, "actual_normal_day_q50_wape"] > 0
     assert scorecard.loc[0, "q99_coverage_all"] <= 1.0
 
 
