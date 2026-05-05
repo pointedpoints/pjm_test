@@ -25,12 +25,11 @@ class SpikeFilteredTargetModel(ForecastModel):
     def fit(self, train_df: pd.DataFrame) -> None:
         filtered = apply_spike_filter(train_df, self.filter_config)
         self.last_filter_diagnostics = summarize_spike_filter(filtered)
-        fit_frame = train_df.copy()
-        fit_frame["y"] = filtered["y_train_clean"].astype(float)
-        self.base_model.fit(fit_frame)
+        self.base_model.fit(_clean_target_frame(train_df, filtered))
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
-        return self.base_model.predict(history_df=history_df, future_df=future_df)
+        filtered_history = apply_spike_filter(history_df, self.filter_config)
+        return self.base_model.predict(history_df=_clean_target_frame(history_df, filtered_history), future_df=future_df)
 
     def save(self, path: Path) -> None:
         self.base_model.save(path)
@@ -52,3 +51,9 @@ def summarize_spike_filter(filtered: pd.DataFrame) -> dict[str, float]:
         "mean_spike_residual": 0.0 if spike_count == 0.0 else float(residual.loc[spike_mask].mean()),
         "max_spike_residual": 0.0 if spike_count == 0.0 else float(residual.loc[spike_mask].max()),
     }
+
+
+def _clean_target_frame(frame: pd.DataFrame, filtered: pd.DataFrame) -> pd.DataFrame:
+    cleaned = frame.copy()
+    cleaned["y"] = filtered["y_train_clean"].astype(float)
+    return cleaned

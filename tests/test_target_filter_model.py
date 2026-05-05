@@ -14,11 +14,15 @@ class RecordingModel(ForecastModel):
 
     def __init__(self) -> None:
         self.fit_frame: pd.DataFrame | None = None
+        self.predict_history_frame: pd.DataFrame | None = None
+        self.predict_future_frame: pd.DataFrame | None = None
 
     def fit(self, train_df: pd.DataFrame) -> None:
         self.fit_frame = train_df.copy()
 
     def predict(self, history_df: pd.DataFrame, future_df: pd.DataFrame) -> pd.DataFrame:
+        self.predict_history_frame = history_df.copy()
+        self.predict_future_frame = future_df.copy()
         return pd.DataFrame({"ds": future_df["ds"], "y_pred": 1.0})
 
     def save(self, path: Path) -> None:
@@ -74,3 +78,26 @@ def test_spike_filtered_target_model_exposes_last_diagnostics() -> None:
     assert diagnostics["rows"] == float(len(train))
     assert diagnostics["spike_count"] >= 1.0
     assert diagnostics["max_spike_residual"] > 0.0
+
+
+def test_spike_filtered_target_model_cleans_prediction_history_but_not_future_frame() -> None:
+    train = _train_frame()
+    future = train.tail(24).copy()
+    base = RecordingModel()
+    model = SpikeFilteredTargetModel(
+        base_model=base,
+        filter_config=SpikeFilterConfig(window_observations=365, min_history=60),
+    )
+
+    model.fit(train)
+    model.predict(history_df=train, future_df=future)
+
+    assert base.predict_history_frame is not None
+    assert base.predict_future_frame is not None
+    original_spike = train.loc[train["ds"].eq(pd.Timestamp("2024-03-05 17:00:00")), "y"].iloc[0]
+    history_spike = base.predict_history_frame.loc[
+        base.predict_history_frame["ds"].eq(pd.Timestamp("2024-03-05 17:00:00")),
+        "y",
+    ].iloc[0]
+    assert history_spike < original_spike
+    pd.testing.assert_frame_equal(base.predict_future_frame.reset_index(drop=True), future.reset_index(drop=True))
