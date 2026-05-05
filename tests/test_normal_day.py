@@ -83,6 +83,10 @@ def test_normal_day_diagnostics_summarize_q50_relative_error_segments() -> None:
     assert normal["n_days"] == 2
     assert normal["n_hours"] == 4
     assert np.isclose(normal["q50_wape"], 10.0 / 86.0)
+    assert np.isclose(normal["median_ape"], 0.10)
+    assert np.isclose(normal["p75_ape"], 0.11666666666666667)
+    assert np.isclose(normal["p90_ape"], 0.14666666666666667)
+    assert np.isclose(normal["smape"], 0.11731898917253608)
     assert np.isclose(normal["q50_mae"], 2.5)
     assert np.isclose(normal["q50_bias_mean"], 0.5)
 
