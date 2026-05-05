@@ -12,6 +12,7 @@ from .event_risk_tail_overlay import (
 from .hour_x_regime_grid import HourXRegimeGridResult, evaluate_hour_x_regime_threshold_grid
 from .median_bias_grid import MedianBiasGridResult, evaluate_median_bias_grid
 from .metrics import compute_hourly_mae, compute_metrics, compute_quantile_diagnostics
+from .normal_day import compute_normal_day_diagnostics
 from .quality_gate import QualityDecision, QualityGateResult, QualityMetrics, evaluate_quality_gate
 from .regime_metrics import compute_regime_metrics
 from .relative_error import compute_relative_error_diagnostics
@@ -39,6 +40,7 @@ __all__ = [
     "compute_daily_peak_tail_gap",
     "compute_hourly_mae",
     "compute_metrics",
+    "compute_normal_day_diagnostics",
     "compute_quantile_diagnostics",
     "compute_regime_metrics",
     "compute_relative_error_diagnostics",
