@@ -575,7 +575,7 @@ class Workspace:
         evaluator.compute_quantile_diagnostics(bundle)
         evaluator.compute_regime_metrics(bundle)
         evaluator.compute_spike_score_diagnostics(bundle)
-        normal_day_df = evaluator.compute_normal_day_diagnostics(bundle)
+        evaluator.compute_normal_day_diagnostics(bundle)
         relative_error_df = evaluator.compute_relative_error(bundle)
         tail_regime_df = evaluator.compute_tail_regime_diagnostics(bundle)
         evaluator.compute_experiment_scorecard(bundle, metrics_df, relative_error_df, tail_regime_df)
