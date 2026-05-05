@@ -212,6 +212,93 @@ def test_evaluator_writes_scorecard_artifacts() -> None:
     assert scorecard.loc[0, "q99_coverage_all"] <= 1.0
 
 
+def test_experiment_scorecard_uses_matching_normal_day_rows_per_run() -> None:
+    artifacts = _CapturingArtifacts()
+    evaluator = Evaluator(schema=object(), artifacts=artifacts)
+    bundle = EvaluationBundle(
+        split="validation",
+        runs=[
+            _loaded_run("nhits_a_validation_seed7", "nhits_a", seed=7),
+            _loaded_run("nhits_b_validation_seed11", "nhits_b", seed=11),
+        ],
+    )
+    metrics = pd.DataFrame(
+        [
+            {
+                "run": "nhits_a_validation_seed7",
+                "model": "nhits_a",
+                "seed": 7,
+                "mae": 1.0,
+                "rmse": 1.5,
+                "smape": 2.0,
+                "pinball": 2.0,
+            },
+            {
+                "run": "nhits_b_validation_seed11",
+                "model": "nhits_b",
+                "seed": 11,
+                "mae": 2.0,
+                "rmse": 2.5,
+                "smape": 3.0,
+                "pinball": 1.0,
+            },
+        ]
+    )
+    normal_day = pd.DataFrame(
+        [
+            {
+                "run": "nhits_a_validation_seed7",
+                "segment": "actual_normal_day",
+                "q50_wape": 0.11,
+                "median_ape": 0.12,
+                "p75_ape": 0.13,
+                "p90_ape": 0.14,
+                "smape": 0.15,
+            },
+            {
+                "run": "nhits_a_validation_seed7",
+                "segment": "forecast_low_risk_day",
+                "q50_wape": 0.21,
+                "median_ape": 0.22,
+                "p75_ape": 0.23,
+                "p90_ape": 0.24,
+                "smape": 0.25,
+            },
+            {
+                "run": "nhits_b_validation_seed11",
+                "segment": "actual_normal_day",
+                "q50_wape": 0.71,
+                "median_ape": 0.72,
+                "p75_ape": 0.73,
+                "p90_ape": 0.74,
+                "smape": 0.75,
+            },
+            {
+                "run": "nhits_b_validation_seed11",
+                "segment": "forecast_low_risk_day",
+                "q50_wape": 0.81,
+                "median_ape": 0.82,
+                "p75_ape": 0.83,
+                "p90_ape": 0.84,
+                "smape": 0.85,
+            },
+        ]
+    )
+
+    scorecard = evaluator.compute_experiment_scorecard(
+        bundle,
+        metrics,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        normal_day,
+    ).set_index("run")
+
+    assert scorecard.loc["nhits_a_validation_seed7", "actual_normal_day_q50_wape"] == 0.11
+    assert scorecard.loc["nhits_a_validation_seed7", "forecast_low_risk_day_q50_wape"] == 0.21
+    assert scorecard.loc["nhits_b_validation_seed11", "actual_normal_day_q50_wape"] == 0.71
+    assert scorecard.loc["nhits_b_validation_seed11", "forecast_low_risk_day_q50_wape"] == 0.81
+
+
 def test_baseline_model_names_are_defaulted_for_comed_scorecard() -> None:
     assert baseline_model_names(None) == [
         "seasonal_naive",
@@ -245,6 +332,19 @@ def _prediction_frame() -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _loaded_run(name: str, model: str, *, seed: int) -> LoadedPredictionRun:
+    return LoadedPredictionRun(
+        name=name,
+        path=Path(f"{name}.parquet"),
+        model=model,
+        split="validation",
+        seed=seed,
+        variant=None,
+        raw_frame=pd.DataFrame(),
+        frame=pd.DataFrame(),
+    )
 
 
 class _CapturingArtifacts:

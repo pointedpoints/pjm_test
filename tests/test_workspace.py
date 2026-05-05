@@ -543,6 +543,89 @@ def test_workspace_main_flow_writes_predictions_metrics_and_report(tmp_path: Pat
     assert workspace.artifacts.report_asset("test_scenario_diagnostics.csv") in rebuilt
 
 
+def test_workspace_evaluate_passes_normal_day_diagnostics_to_scorecard(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    bundle = object()
+    metrics_df = pd.DataFrame([{"run": "nhits_test_seed7", "pinball": 1.0}])
+    normal_day_df = pd.DataFrame(
+        [
+            {
+                "run": "nhits_test_seed7",
+                "segment": "actual_normal_day",
+                "q50_wape": 0.25,
+            }
+        ]
+    )
+    relative_error_df = pd.DataFrame([{"run": "nhits_test_seed7", "slice_type": "all", "slice": "all"}])
+    tail_regime_df = pd.DataFrame([{"run": "nhits_test_seed7", "regime": "all"}])
+
+    class EvaluatorStub:
+        def __init__(self, schema, artifacts) -> None:
+            captured["schema"] = schema
+            captured["artifacts"] = artifacts
+
+        def load_runs(self, split: str):
+            captured["split"] = split
+            return bundle
+
+        def compute_metrics(self, loaded_bundle):
+            assert loaded_bundle is bundle
+            return metrics_df
+
+        def compute_quantile_diagnostics(self, loaded_bundle) -> None:
+            assert loaded_bundle is bundle
+
+        def compute_regime_metrics(self, loaded_bundle) -> None:
+            assert loaded_bundle is bundle
+
+        def compute_spike_score_diagnostics(self, loaded_bundle) -> None:
+            assert loaded_bundle is bundle
+
+        def compute_normal_day_diagnostics(self, loaded_bundle):
+            assert loaded_bundle is bundle
+            return normal_day_df
+
+        def compute_relative_error(self, loaded_bundle):
+            assert loaded_bundle is bundle
+            return relative_error_df
+
+        def compute_tail_regime_diagnostics(self, loaded_bundle):
+            assert loaded_bundle is bundle
+            return tail_regime_df
+
+        def compute_experiment_scorecard(
+            self,
+            loaded_bundle,
+            metrics,
+            relative_error,
+            tail_regime,
+            normal_day=None,
+        ) -> None:
+            captured["scorecard_args"] = (loaded_bundle, metrics, relative_error, tail_regime, normal_day)
+
+        def compute_scenario_diagnostics(self, loaded_bundle) -> None:
+            assert loaded_bundle is bundle
+
+        def compute_dm(self, loaded_bundle) -> None:
+            assert loaded_bundle is bundle
+
+        def render_plots(self, loaded_bundle, metrics, split: str) -> None:
+            captured["render_args"] = (loaded_bundle, metrics, split)
+
+    workspace = Workspace(config=object(), directories={}, artifacts=object(), models=object())
+    monkeypatch.setattr("pjm_forecast.workspace.Evaluator", EvaluatorStub)
+    monkeypatch.setattr(workspace, "schema", lambda: "schema")
+
+    workspace.evaluate("test")
+
+    scorecard_args = captured["scorecard_args"]
+    assert scorecard_args[0] is bundle
+    assert scorecard_args[1] is metrics_df
+    assert scorecard_args[2] is relative_error_df
+    assert scorecard_args[3] is tail_regime_df
+    assert scorecard_args[4] is normal_day_df
+
+
 def test_workspace_prepare_merges_optional_weather_features(tmp_path: Path, monkeypatch) -> None:
     csv_path = _write_csv(tmp_path)
     config_path = _write_temp_config(tmp_path, csv_path, with_weather=True)
