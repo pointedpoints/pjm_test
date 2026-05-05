@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from pjm_forecast.config import ProjectConfig
+from pjm_forecast.config import ProjectConfig, load_config
 from pjm_forecast.models.registry import build_model
 from pjm_forecast.models.target_filter import SpikeFilteredTargetModel
 
@@ -42,3 +42,13 @@ def test_registry_leaves_model_unwrapped_when_target_filter_is_absent() -> None:
     model = build_model(config, "lightgbm_q", seed=7)
 
     assert not isinstance(model, SpikeFilteredTargetModel)
+
+
+def test_nhits_normal_cap_experiment_wraps_nhits_model() -> None:
+    config = load_config("configs/experiments/pjm_current_validation_nhits_normal_cap.yaml")
+
+    model = build_model(config, "nhits_normal_cap", seed=7)
+
+    assert isinstance(model, SpikeFilteredTargetModel)
+    assert model.filter_config.min_history == 60
+    assert model.filter_config.window_observations == 365
