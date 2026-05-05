@@ -104,6 +104,9 @@ class ArtifactStore:
     def spike_filter_diagnostics(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_spike_filter_diagnostics.csv"
 
+    def normal_day_diagnostics(self, split: str) -> Path:
+        return self.directories["metrics_dir"] / f"{split}_normal_day_diagnostics.csv"
+
     def relative_error(self, split: str) -> Path:
         return self.directories["metrics_dir"] / f"{split}_relative_error.csv"
 
@@ -175,6 +178,12 @@ class ArtifactStore:
 
     def write_spike_filter_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
         output_path = self.spike_filter_diagnostics(split)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_df.to_csv(output_path, index=False)
+        return output_path
+
+    def write_normal_day_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        output_path = self.normal_day_diagnostics(split)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         diagnostics_df.to_csv(output_path, index=False)
         return output_path
@@ -284,6 +293,7 @@ class ArtifactStore:
             self.regime_metrics(split),
             self.spike_score_diagnostics(split),
             self.spike_filter_diagnostics(split),
+            self.normal_day_diagnostics(split),
             self.relative_error(split),
             self.tail_regime_diagnostics(split),
             self.experiment_scorecard(split),
@@ -565,6 +575,7 @@ class Workspace:
         evaluator.compute_quantile_diagnostics(bundle)
         evaluator.compute_regime_metrics(bundle)
         evaluator.compute_spike_score_diagnostics(bundle)
+        normal_day_df = evaluator.compute_normal_day_diagnostics(bundle)
         relative_error_df = evaluator.compute_relative_error(bundle)
         tail_regime_df = evaluator.compute_tail_regime_diagnostics(bundle)
         evaluator.compute_experiment_scorecard(bundle, metrics_df, relative_error_df, tail_regime_df)

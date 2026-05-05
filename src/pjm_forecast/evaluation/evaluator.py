@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -9,6 +10,7 @@ import pandas as pd
 from .dm import dm_test
 from .event_risk_tail_overlay import apply_event_risk_tail_overlay, fit_event_risk_tail_overlay
 from .metrics import compute_metrics, compute_quantile_diagnostics
+from .normal_day import compute_normal_day_diagnostics
 from .regime_metrics import compute_regime_metrics
 from .reporting import plot_high_volatility_week, plot_hourly_mae
 from .relative_error import compute_relative_error_diagnostics
@@ -61,6 +63,8 @@ class _ArtifactStoreLike(Protocol):
 
     def write_spike_score_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
+    def write_normal_day_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
+
     def write_relative_error(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
 
     def write_tail_regime_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path: ...
@@ -78,6 +82,17 @@ def _optional_float(value: object) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _report_section(schema: object, section_name: str) -> Mapping[str, object]:
+    config = getattr(schema, "config", None)
+    if config is None:
+        return {}
+    report = config.get("report", {}) if isinstance(config, Mapping) else getattr(config, "report", {})
+    if not isinstance(report, Mapping):
+        return {}
+    section = report.get(section_name, {})
+    return section if isinstance(section, Mapping) else {}
 
 
 class Evaluator:
@@ -304,6 +319,27 @@ class Evaluator:
             )
         diagnostics_df = pd.DataFrame(rows).sort_values(["model", "seed", "run"]).reset_index(drop=True)
         self.artifacts.write_spike_score_diagnostics(bundle.split, diagnostics_df)
+        return diagnostics_df
+
+    def compute_normal_day_diagnostics(self, bundle: EvaluationBundle) -> pd.DataFrame:
+        normal_cfg = _report_section(self.schema, "normal_day_evaluation")
+        rows = []
+        for run in bundle.runs:
+            diagnostics = compute_normal_day_diagnostics(
+                run.frame,
+                actual_daily_max_quantile=float(normal_cfg.get("actual_daily_max_quantile", 0.95)),
+                low_risk_score_column=str(normal_cfg.get("low_risk_score_column", "spike_score")),
+                low_risk_threshold=float(normal_cfg.get("low_risk_threshold", 0.50)),
+                low_risk_aggregation=str(normal_cfg.get("low_risk_aggregation", "mean")),
+            )
+            diagnostics.insert(0, "seed", run.seed)
+            diagnostics.insert(0, "model", run.model)
+            diagnostics.insert(0, "run", run.name)
+            rows.append(diagnostics)
+        diagnostics_df = pd.concat(rows, axis=0, ignore_index=True) if rows else pd.DataFrame()
+        if not diagnostics_df.empty:
+            diagnostics_df = diagnostics_df.sort_values(["model", "seed", "run", "segment"]).reset_index(drop=True)
+        self.artifacts.write_normal_day_diagnostics(bundle.split, diagnostics_df)
         return diagnostics_df
 
     def compute_relative_error(self, bundle: EvaluationBundle) -> pd.DataFrame:

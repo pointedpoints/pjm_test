@@ -24,10 +24,12 @@ def test_artifact_store_writes_scorecard_outputs() -> None:
     )
     frame = pd.DataFrame([{"run": "model_test_seed7", "q50_wape": 0.25}])
 
+    normal_day_path = store.write_normal_day_diagnostics("test", frame)
     relative_path = store.write_relative_error("test", frame)
     tail_path = store.write_tail_regime_diagnostics("test", frame)
     scorecard_path = store.write_experiment_scorecard("test", frame)
 
+    assert normal_day_path == tmp_path / "metrics" / "test_normal_day_diagnostics.csv"
     assert relative_path == tmp_path / "metrics" / "test_relative_error.csv"
     assert tail_path == tmp_path / "metrics" / "test_tail_regime_diagnostics.csv"
     assert scorecard_path == tmp_path / "metrics" / "test_experiment_scorecard.csv"
@@ -151,11 +153,14 @@ def test_evaluator_writes_scorecard_artifacts() -> None:
     )
 
     metrics = evaluator.compute_metrics(bundle)
+    normal_day = evaluator.compute_normal_day_diagnostics(bundle)
     relative_error = evaluator.compute_relative_error(bundle)
     tail_regime = evaluator.compute_tail_regime_diagnostics(bundle)
     scorecard = evaluator.compute_experiment_scorecard(bundle, metrics, relative_error, tail_regime)
 
-    assert set(artifacts.written) == {"metrics", "relative_error", "tail_regime", "scorecard"}
+    assert set(artifacts.written) == {"metrics", "normal_day", "relative_error", "tail_regime", "scorecard"}
+    assert artifacts.written["normal_day"].loc[0, "run"] == "nhits_test_seed7"
+    assert normal_day.loc[0, "run"] == "nhits_test_seed7"
     assert artifacts.written["relative_error"].loc[0, "run"] == "nhits_test_seed7"
     assert artifacts.written["tail_regime"].loc[0, "run"] == "nhits_test_seed7"
     assert scorecard.loc[0, "q50_wape_all"] > 0
@@ -204,6 +209,10 @@ class _CapturingArtifacts:
     def write_metrics(self, split: str, metrics_df: pd.DataFrame) -> Path:
         self.written["metrics"] = metrics_df
         return Path(f"{split}_metrics.csv")
+
+    def write_normal_day_diagnostics(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
+        self.written["normal_day"] = diagnostics_df
+        return Path(f"{split}_normal_day_diagnostics.csv")
 
     def write_relative_error(self, split: str, diagnostics_df: pd.DataFrame) -> Path:
         self.written["relative_error"] = diagnostics_df
