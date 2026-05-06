@@ -273,9 +273,6 @@ class ProjectConfig:
         model_cfg["exog_scaler"] = exog_scaler
         return model_cfg
 
-    def nbeatsx_runtime_config(self) -> dict[str, Any]:
-        return self.runtime_model_config("nbeatsx")
-
     def validate_runtime_contracts(self) -> None:
         if self.target_column != "y":
             raise ValueError(f"features.target_col={self.target_column!r} is unsupported; v1 requires the canonical target column 'y'.")

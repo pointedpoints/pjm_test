@@ -535,9 +535,6 @@ class Workspace:
         self.artifacts.best_params(model_name).write_text(json.dumps(study.best_params, indent=2), encoding="utf-8")
         self._loaded_best_params.discard(model_name)
 
-    def tune_nbeatsx(self) -> None:
-        self.tune_model()
-
     def backtest(self, split: SplitName = "test", model_names: list[str] | None = None) -> None:
         feature_df = self.feature_frame()
         split_boundaries = self.split_boundaries()

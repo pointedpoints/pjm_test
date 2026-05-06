@@ -23,7 +23,7 @@ def test_runtime_contract_matches_across_v1_and_kaggle_configs() -> None:
         Path("configs/pjm_day_ahead_kaggle.yaml"),
     ]:
         config = load_config(path)
-        runtime_cfg = config.nbeatsx_runtime_config()
+        runtime_cfg = config.runtime_model_config("nbeatsx")
         assert config.target_column == "y"
         assert config.prediction_horizon == 24
         assert config.prediction_freq == "h"
@@ -448,8 +448,8 @@ def test_load_config_allows_huber_mqloss_for_quantile_training(tmp_path: Path) -
         ),
     )
     config = load_config(config_path)
-    assert config.nbeatsx_runtime_config()["loss_name"] == "huber_mqloss"
-    assert config.nbeatsx_runtime_config()["loss_delta"] == 0.75
+    assert config.runtime_model_config("nbeatsx")["loss_name"] == "huber_mqloss"
+    assert config.runtime_model_config("nbeatsx")["loss_delta"] == 0.75
 
 
 def test_load_config_allows_quantile_weights_for_neuralforecast_models(tmp_path: Path) -> None:
@@ -463,7 +463,7 @@ def test_load_config_allows_quantile_weights_for_neuralforecast_models(tmp_path:
         ),
     )
     config = load_config(config_path)
-    assert config.nbeatsx_runtime_config()["quantile_weights"] == [1.0, 1.0, 3.0]
+    assert config.runtime_model_config("nbeatsx")["quantile_weights"] == [1.0, 1.0, 3.0]
 
 
 def test_load_config_allows_quantile_deltas_and_monotonicity_penalty(tmp_path: Path) -> None:
@@ -477,7 +477,7 @@ def test_load_config_allows_quantile_deltas_and_monotonicity_penalty(tmp_path: P
             payload["models"]["nbeatsx"].__setitem__("monotonicity_penalty", 0.05),
         ),
     )
-    runtime_cfg = load_config(config_path).nbeatsx_runtime_config()
+    runtime_cfg = load_config(config_path).runtime_model_config("nbeatsx")
     assert runtime_cfg["quantile_deltas"] == [1.25, 0.75, 1.25]
     assert runtime_cfg["monotonicity_penalty"] == 0.05
 
