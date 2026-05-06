@@ -1,0 +1,518 @@
+backtest:
+  benchmark_models:
+  - seasonal_naive
+  - lightgbm_q
+  - xgboost_q
+  - nhits_168
+  - nhits_336
+  - nhits_720
+  freq: h
+  horizon: 24
+  retrain_weekday: 0
+  retrain_weekday_name: MON
+  rolling_window_days: 730
+  seasonal_naive_lag_hours: 168
+  validation_days: 182
+  years_test: 1
+dataset:
+  dataset_name: PJM
+  end_date: '2026-03-31'
+  exogenous_columns:
+    zonal_load_forecast: Zonal COMED load foecast
+  local_csv_path: data/raw/PJM_COMED_20210101_20260331_weather_ready.csv
+  price_col: Zonal COMED price
+  source_filename: PJM.csv
+  source_type: official_weather_ready
+  source_url: https://zenodo.org/records/4624805/files/PJM.csv
+  start_date: '2021-01-01'
+  timestamp_col: Date
+  unique_id: PJM_COMED
+features:
+  cyclical:
+    day_of_week: 7
+    day_of_year: 366
+    hour: 24
+    month: 12
+  derived_features:
+  - base: 18.0
+    kind: degree_day
+    mode: heating
+    name: heating_degree_18
+    source: weather_apparent_temp_mean
+  - base: 22.0
+    kind: degree_day
+    mode: cooling
+    name: cooling_degree_22
+    source: weather_apparent_temp_mean
+  - kind: multiply
+    left: zonal_load_forecast
+    name: load_cooling_pressure
+    right: cooling_degree_22
+  - kind: prior_day_price_stat
+    name: prior_day_price_max_ramp
+    source: y
+    stat: max_ramp
+  - inputs:
+    - source: zonal_load_forecast
+      weight: 0.25
+    - source: cooling_degree_22
+      weight: 0.2
+    - source: load_cooling_pressure
+      weight: 0.25
+    - source: heating_degree_18
+      weight: 0.15
+    - source: prior_day_price_max_ramp
+      weight: 0.15
+    kind: spike_score
+    name: spike_score
+  future_exog:
+  - zonal_load_forecast
+  - weather_temp_mean
+  - weather_temp_spread
+  - weather_wind_speed_mean
+  - weather_cloud_cover_mean
+  - weather_precip_area_fraction
+  - heating_degree_18
+  - cooling_degree_22
+  - load_cooling_pressure
+  holiday_country: US
+  lag_sources:
+  - zonal_load_forecast
+  price_lags:
+  - 24
+  scaler:
+    enabled: true
+    strategy_candidates:
+    - none
+    - standard
+    - robust
+  source_lags:
+  - 24
+  target_col: y
+models:
+  lightgbm_q:
+    colsample_bytree: 0.9
+    learning_rate: 0.05
+    loss_name: mqloss
+    min_child_samples: 40
+    n_estimators: 200
+    n_jobs: -1
+    num_leaves: 31
+    quantiles: &id001
+    - 0.01
+    - 0.05
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.975
+    - 0.99
+    - 0.995
+    reg_lambda: 0.0
+    subsample: 0.9
+    type: lightgbm_quantile
+  seasonal_naive:
+    type: seasonal_naive
+  xgboost_q:
+    colsample_bytree: 0.9
+    learning_rate: 0.05
+    loss_name: mqloss
+    max_depth: 6
+    min_child_weight: 4.0
+    n_estimators: 200
+    n_jobs: -1
+    quantiles: *id001
+    reg_lambda: 1.0
+    subsample: 0.9
+    type: xgboost_quantile
+  nhits_336:
+    batch_size: 16
+    dropout_prob_theta: 0.05
+    early_stop_patience_steps: 10
+    ensemble_aggregation: mean
+    ensemble_members:
+    - seed_offset: 0
+    exog_scaler: zscore
+    h: 24
+    input_size: 336
+    learning_rate: 0.0005
+    loss_delta: 0.75
+    loss_name: huber_mqloss
+    max_steps: 300
+    mlp_units:
+    - - 768
+      - 768
+    - - 768
+      - 768
+    - - 768
+      - 768
+    monotonicity_penalty: 0.03
+    n_blocks:
+    - 1
+    - 1
+    - 1
+    n_freq_downsample:
+    - 4
+    - 2
+    - 1
+    n_pool_kernel_size:
+    - 2
+    - 2
+    - 1
+    quantile_deltas:
+    - 1.5
+    - 1.25
+    - 1.0
+    - 0.85
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.85
+    - 1.0
+    - 1.25
+    - 1.4
+    - 1.6
+    - 1.8
+    quantile_weights:
+    - 1.5
+    - 1.3
+    - 1.15
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.1
+    - 1.3
+    - 1.7
+    - 2.1
+    - 2.7
+    - 3.2
+    quantiles:
+    - 0.01
+    - 0.05
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.975
+    - 0.99
+    - 0.995
+    scaler_type: identity
+    stack_types:
+    - identity
+    - identity
+    - identity
+    target_transform: asinh_q95
+    type: nhits
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
+  nhits_168:
+    batch_size: 16
+    dropout_prob_theta: 0.05
+    early_stop_patience_steps: 10
+    ensemble_aggregation: mean
+    ensemble_members:
+    - seed_offset: 0
+    exog_scaler: zscore
+    h: 24
+    input_size: 168
+    learning_rate: 0.0005
+    loss_delta: 0.75
+    loss_name: huber_mqloss
+    max_steps: 300
+    mlp_units:
+    - - 768
+      - 768
+    - - 768
+      - 768
+    - - 768
+      - 768
+    monotonicity_penalty: 0.03
+    n_blocks:
+    - 1
+    - 1
+    - 1
+    n_freq_downsample:
+    - 4
+    - 2
+    - 1
+    n_pool_kernel_size:
+    - 1
+    - 1
+    - 1
+    quantile_deltas:
+    - 1.5
+    - 1.25
+    - 1.0
+    - 0.85
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.85
+    - 1.0
+    - 1.25
+    - 1.4
+    - 1.6
+    - 1.8
+    quantile_weights:
+    - 1.5
+    - 1.3
+    - 1.15
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.1
+    - 1.3
+    - 1.7
+    - 2.1
+    - 2.7
+    - 3.2
+    quantiles:
+    - 0.01
+    - 0.05
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.975
+    - 0.99
+    - 0.995
+    scaler_type: identity
+    stack_types:
+    - identity
+    - identity
+    - identity
+    target_transform: asinh_q95
+    type: nhits
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
+  nhits_720:
+    batch_size: 16
+    dropout_prob_theta: 0.05
+    early_stop_patience_steps: 10
+    ensemble_aggregation: mean
+    ensemble_members:
+    - seed_offset: 0
+    exog_scaler: zscore
+    h: 24
+    input_size: 720
+    learning_rate: 0.0005
+    loss_delta: 0.75
+    loss_name: huber_mqloss
+    max_steps: 300
+    mlp_units:
+    - - 768
+      - 768
+    - - 768
+      - 768
+    - - 768
+      - 768
+    monotonicity_penalty: 0.03
+    n_blocks:
+    - 1
+    - 1
+    - 1
+    n_freq_downsample:
+    - 4
+    - 2
+    - 1
+    n_pool_kernel_size:
+    - 4
+    - 4
+    - 2
+    quantile_deltas:
+    - 1.5
+    - 1.25
+    - 1.0
+    - 0.85
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.75
+    - 0.85
+    - 1.0
+    - 1.25
+    - 1.4
+    - 1.6
+    - 1.8
+    quantile_weights:
+    - 1.5
+    - 1.3
+    - 1.15
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.1
+    - 1.3
+    - 1.7
+    - 2.1
+    - 2.7
+    - 3.2
+    quantiles:
+    - 0.01
+    - 0.05
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.95
+    - 0.975
+    - 0.99
+    - 0.995
+    scaler_type: identity
+    stack_types:
+    - identity
+    - identity
+    - identity
+    target_transform: asinh_q95
+    type: nhits
+    val_check_steps: 50
+    validation_size: 168
+    windows_batch_size: 512
+project:
+  benchmark_seed: 7
+  directories:
+    artifact_dir: artifacts_current
+    hyperparameter_dir: artifacts_current/hyperparameters
+    metrics_dir: artifacts_current/metrics
+    plots_dir: artifacts_current/plots
+    prediction_dir: artifacts_current/predictions
+    processed_data_dir: data/processed_current
+    raw_data_dir: data/raw
+    report_dir: artifacts_current/report
+  name: pjm_dayahead_current_processed
+  random_seeds:
+  - 7
+report:
+  auxiliary_metrics:
+  - mae
+  - rmse
+  - smape
+  - hourly_mae
+  - dm
+  include_high_volatility_week: true
+  primary_metric: pinball
+  quantile_postprocess:
+    enabled: false
+  scenario_evaluation:
+    copula_family: student_t
+    dof_grid:
+    - 3.0
+    - 5.0
+    - 7.0
+    - 10.0
+    enabled: true
+    n_samples: 256
+    random_seed: 7
+    source_split: validation
+    tail_policy: linear
+retrieval:
+  enabled: false
+tuning:
+  metric: pinball
+  model_name: nhits_336
+  n_trials: 5
+  search_space:
+    batch_size:
+    - 16
+    - 32
+    - 64
+    dropout:
+    - 0.0
+    - 0.3
+    input_size:
+    - 168
+    - 336
+    - 504
+    - 672
+    learning_rate:
+    - 5.0e-05
+    - 0.008
+    max_steps:
+    - 250
+    - 900
+    mlp_units:
+    - - 256
+      - 256
+    - - 512
+      - 512
+    - - 768
+      - 768
+  use_ensemble_in_tuning: false
+weather:
+  cache_dir: data/raw/weather
+  enabled: true
+  model: best_match
+  output_columns:
+  - weather_temp_mean
+  - weather_temp_spread
+  - weather_apparent_temp_mean
+  - weather_wind_speed_mean
+  - weather_cloud_cover_mean
+  - weather_precip_area_fraction
+  points:
+  - latitude: 41.885
+    longitude: -87.62
+    name: chicago_lakefront
+    weight: 0.24
+  - latitude: 41.978
+    longitude: -87.904
+    name: ohare_northwest
+    weight: 0.18
+  - latitude: 42.148
+    longitude: -87.8
+    name: north_suburbs
+    weight: 0.14
+  - latitude: 41.836
+    longitude: -88.243
+    name: west_suburbs
+    weight: 0.18
+  - latitude: 41.605
+    longitude: -87.793
+    name: southwest_suburbs
+    weight: 0.14
+  - latitude: 41.525
+    longitude: -87.635
+    name: south_suburbs
+    weight: 0.12
+  precipitation_area_fraction_threshold_mm: 0.1
+  provider: open_meteo_historical_forecast
+  timezone: America/Chicago
