@@ -8,6 +8,10 @@ tmp_pytest/
 tmp_local/
 pytest_cache_local/
 .tmp/
+.tmp_pytest*/
+ptbt_run_*/
+pytest-cache-files-*/
+.hermes/
 lightning_logs/
 .ipynb_checkpoints/
 *.pyc
