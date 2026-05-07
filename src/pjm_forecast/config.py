@@ -301,6 +301,8 @@ class ProjectConfig:
             *self.dataset.get("exogenous_columns", {}).keys(),
             *self.weather_output_columns(),
             *["is_weekend", "is_holiday"],
+            *[f"{col}_sin" for col in self.features.get("cyclical", {})],
+            *[f"{col}_cos" for col in self.features.get("cyclical", {})],
             self.target_column,
         }
         for item in self.features.get("derived_ramps", []):
