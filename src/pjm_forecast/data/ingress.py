@@ -107,8 +107,8 @@ def _fill_load_forecast_nan_with_weather(
 
     available_cols = [c for c in WEATHER_COLS if c in panel.columns]
     if len(available_cols) < 3:
-        # Not enough weather features for regression — fall through to ffill/bfill
-        panel[LOAD_COL] = panel[LOAD_COL].ffill().bfill()
+        # Not enough weather features for regression — ffill only (no bfill)
+        panel[LOAD_COL] = panel[LOAD_COL].ffill()
         return panel
 
     from sklearn.linear_model import Ridge
