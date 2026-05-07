@@ -130,12 +130,16 @@ def _normalize_lmp_to_epf_clock(frame: pd.DataFrame, expected: pd.DatetimeIndex)
 
 def _normalize_load_forecast(frame: pd.DataFrame, expected: pd.DatetimeIndex) -> pd.DataFrame:
     normalized = frame.set_index("Date").reindex(expected).rename_axis("Date").reset_index()
-    values = normalized["Zonal COMED load foecast"]
-    for lag in (24, 48, 168):
-        values = values.combine_first(values.shift(lag))
-    values = values.interpolate(method="linear", limit_direction="both")
-    values = values.ffill().bfill()
-    normalized["Zonal COMED load foecast"] = values
-    if normalized["Zonal COMED load foecast"].isna().any():
-        raise ValueError("Load forecast normalization left missing values after simple fills.")
+    col = "Zonal COMED load foecast"
+    # Intra-day interpolation only: group by date and fill within each day.
+    idx_col = normalized.columns[0]  # "Date"
+    normalized = normalized.set_index(idx_col)
+    normalized[col] = (
+        normalized
+        .groupby(normalized.index.date)[col]
+        .transform(lambda s: s.interpolate(method="linear", limit_direction="both").ffill().bfill())
+    )
+    # Allow remaining NaN to pass through — will be handled by weather regression
+    # in the ingress layer after weather features are available.
+    normalized = normalized.reset_index()
     return normalized

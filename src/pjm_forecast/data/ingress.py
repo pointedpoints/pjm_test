@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from pjm_forecast.config import ProjectConfig
@@ -39,6 +40,7 @@ def prepare_dataset(
         output_columns=config.weather_output_columns(),
     )
     enriched_panel = prepared.panel_df.merge(weather_df, on="ds", how="left")
+    enriched_panel = _fill_load_forecast_nan_with_weather(enriched_panel, weather_df)
     enriched = PreparedDataset.from_panel_frame(config, enriched_panel, schema=FeatureSchema(config))
     return PreparedDataResult(prepared=enriched, weather_df=weather_df)
 
@@ -78,3 +80,94 @@ def _normalize_weather_frame(
     if len(actual_index) != len(expected_index) or not actual_index.equals(expected_index):
         raise ValueError("Weather frame ds timestamps must align exactly to the base hourly panel.")
     return normalized
+
+
+def _fill_load_forecast_nan_with_weather(
+    panel: pd.DataFrame,
+    weather_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Fill remaining load forecast NaN using weather regression + ffill/bfill fallback.
+
+    Strategy: for each day with NaN in the load forecast column, train a Ridge
+    regression on same-day non-NaN hours → predict missing hours.  Falls back to
+    similar historical days if same-day samples are insufficient.  Final fallback
+    is cross-day ffill/bfill.
+    """
+    LOAD_COL = "zonal_load_forecast"
+    WEATHER_COLS = [
+        "weather_temp_mean", "weather_temp_spread",
+        "weather_apparent_temp_mean", "weather_wind_speed_mean",
+        "weather_cloud_cover_mean", "weather_precip_area_fraction",
+    ]
+
+    if LOAD_COL not in panel.columns:
+        return panel
+    if not panel[LOAD_COL].isna().any():
+        return panel
+
+    available_cols = [c for c in WEATHER_COLS if c in panel.columns]
+    if len(available_cols) < 3:
+        # Not enough weather features for regression — fall through to ffill/bfill
+        panel[LOAD_COL] = panel[LOAD_COL].ffill().bfill()
+        return panel
+
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    panel = panel.copy()
+    panel["_date"] = pd.to_datetime(panel["ds"]).dt.normalize()
+    nan_mask = panel[LOAD_COL].isna()
+
+    for day in panel.loc[nan_mask, "_date"].drop_duplicates():
+        day_mask = panel["_date"] == day
+        missing_in_day = day_mask & nan_mask
+        available_in_day = day_mask & ~nan_mask
+        n_available = available_in_day.sum()
+
+        if n_available < 6:
+            # Not enough same-day samples — try historical days
+            day_dt = pd.Timestamp(day)
+            target_dow = day_dt.dayofweek
+            target_month = day_dt.month
+            historical = panel[
+                (panel["_date"] < day_dt)
+                & (panel["_date"].dt.dayofweek == target_dow)
+                & (panel["_date"].dt.month == target_month)
+                & ~panel[LOAD_COL].isna()
+            ]
+            if len(historical) < 12:
+                # Not enough history either — leave NaN for ffill/bfill
+                continue
+            X_train = historical[available_cols].values
+            y_train = historical[LOAD_COL].values
+        else:
+            X_train = panel.loc[available_in_day, available_cols].values
+            y_train = panel.loc[available_in_day, LOAD_COL].values
+
+        X_pred = panel.loc[missing_in_day, available_cols].values
+        if X_pred.shape[0] == 0:
+            continue
+
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_pred_s = scaler.transform(X_pred)
+
+        model = Ridge(alpha=1.0)
+        model.fit(X_train_s, y_train)
+        preds = model.predict(X_pred_s)
+        preds = np.clip(preds, 0, None)  # load cannot be negative
+
+        panel.loc[missing_in_day, LOAD_COL] = preds
+
+    # Final fallback: forward-fill only (no bfill — that's look-ahead leakage).
+    # If NaN remains at the very beginning of the dataset (no prior value to ffill),
+    # we raise — this means weather regression also failed, which needs investigation.
+    panel[LOAD_COL] = panel[LOAD_COL].ffill()
+    panel = panel.drop(columns=["_date"])
+
+    if panel[LOAD_COL].isna().any():
+        raise ValueError(
+            "Load forecast still has NaN after weather regression + ffill. "
+            "Check for NaN at the very beginning of the dataset."
+        )
+    return panel
