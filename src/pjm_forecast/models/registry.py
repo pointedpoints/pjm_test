@@ -10,8 +10,10 @@ from pjm_forecast.spike_filter import SpikeFilterConfig
 from .epftoolbox_wrappers import DNNModel, LEARModel
 from .nhits import NHITSModel
 from .nbeatsx import NBEATSxModel
+from .patchtst import PatchTSTModel
 from .seasonal_naive import SeasonalNaiveModel
 from .target_filter import SpikeFilteredTargetModel
+from .tide import TiDEModel
 from .tree_quantile import LightGBMQuantileModel, XGBoostQuantileModel
 
 
@@ -91,6 +93,28 @@ def build_model(
         if disable_ensemble:
             model_cfg["ensemble_members"] = []
         model = NHITSModel(**model_cfg)
+        return _maybe_wrap_target_filter(model, target_filter_cfg)
+    if model_type == "tide":
+        contract = schema.nbeatsx_exogenous_contract()
+        if seed is not None:
+            model_cfg["random_seed"] = seed
+        model_cfg["futr_exog_list"] = contract.futr_exog_columns
+        model_cfg["hist_exog_list"] = contract.hist_exog_columns
+        model_cfg["protected_exog_columns"] = contract.protected_exog_columns
+        if disable_ensemble:
+            model_cfg["ensemble_members"] = []
+        model = TiDEModel(**model_cfg)
+        return _maybe_wrap_target_filter(model, target_filter_cfg)
+    if model_type == "patchtst":
+        contract = schema.nbeatsx_exogenous_contract()
+        if seed is not None:
+            model_cfg["random_seed"] = seed
+        model_cfg["futr_exog_list"] = contract.futr_exog_columns
+        model_cfg["hist_exog_list"] = contract.hist_exog_columns
+        model_cfg["protected_exog_columns"] = contract.protected_exog_columns
+        if disable_ensemble:
+            model_cfg["ensemble_members"] = []
+        model = PatchTSTModel(**model_cfg)
         return _maybe_wrap_target_filter(model, target_filter_cfg)
     raise ValueError(f"Unsupported model type: {model_type}")
 
